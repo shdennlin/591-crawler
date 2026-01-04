@@ -171,7 +171,7 @@ async function writeListingsToSheet(
   sheet: any,
   listings: ListingItem[],
   existingProperties: Map<string, any>
-): Promise<{ added: number; updated: number }> {
+): Promise<{ added: number; updated: number; unchanged: number }> {
   // Format: YYYY-MM-DD HH:MM:SS
   const now = new Date()
     .toISOString()
@@ -179,6 +179,7 @@ async function writeListingsToSheet(
     .replace(/\.\d{3}Z$/, "");
   let added = 0;
   let updated = 0;
+  let unchanged = 0;
   const seenIds = new Set<string>();
   const newRows: any[][] = []; // Collect new rows to insert at top
 
@@ -192,25 +193,49 @@ async function writeListingsToSheet(
     }", "${listing.title.replace(/"/g, '""')}")`;
 
     if (existingRow) {
-      // Update existing row (preserve user columns A-C)
-      existingRow.set("Title", titleWithLink);
-      existingRow.set("Price", `${listing.price}${listing.priceUnit}`);
-      existingRow.set("Price (Number)", listing.priceNumber);
-      existingRow.set("Property Type", listing.propertyType);
-      existingRow.set("Size (坪)", listing.size);
-      existingRow.set("Floor", listing.floor);
-      existingRow.set("Location", listing.location);
-      existingRow.set("Metro Distance", listing.metroDistance);
-      existingRow.set("Tags", listing.tags.join(", "));
-      existingRow.set("Agent Type", listing.agentType);
-      existingRow.set("Agent Name", listing.agentName);
-      existingRow.set("Update Info", listing.updateInfo);
-      existingRow.set("Views", listing.views);
-      existingRow.set("Source URL", listing.sourceUrl);
-      existingRow.set("Last Updated", now);
-      existingRow.set("Status", "Active");
-      await existingRow.save();
-      updated++;
+      // Check if any data changed (compare key fields)
+      const priceStr = `${listing.price}${listing.priceUnit}`;
+      const tagsStr = listing.tags.join(", ");
+
+      const hasChanges =
+        existingRow.get("Title") !== titleWithLink ||
+        existingRow.get("Price") !== priceStr ||
+        Number(existingRow.get("Price (Number)")) !== listing.priceNumber ||
+        existingRow.get("Property Type") !== listing.propertyType ||
+        existingRow.get("Size (坪)") !== listing.size ||
+        existingRow.get("Floor") !== listing.floor ||
+        existingRow.get("Location") !== listing.location ||
+        existingRow.get("Metro Distance") !== listing.metroDistance ||
+        existingRow.get("Tags") !== tagsStr ||
+        existingRow.get("Agent Type") !== listing.agentType ||
+        existingRow.get("Agent Name") !== listing.agentName ||
+        existingRow.get("Update Info") !== listing.updateInfo ||
+        Number(existingRow.get("Views")) !== listing.views ||
+        existingRow.get("Status") !== "Active";
+
+      if (hasChanges) {
+        // Update existing row (preserve user columns A-C)
+        existingRow.set("Title", titleWithLink);
+        existingRow.set("Price", priceStr);
+        existingRow.set("Price (Number)", listing.priceNumber);
+        existingRow.set("Property Type", listing.propertyType);
+        existingRow.set("Size (坪)", listing.size);
+        existingRow.set("Floor", listing.floor);
+        existingRow.set("Location", listing.location);
+        existingRow.set("Metro Distance", listing.metroDistance);
+        existingRow.set("Tags", tagsStr);
+        existingRow.set("Agent Type", listing.agentType);
+        existingRow.set("Agent Name", listing.agentName);
+        existingRow.set("Update Info", listing.updateInfo);
+        existingRow.set("Views", listing.views);
+        existingRow.set("Source URL", listing.sourceUrl);
+        existingRow.set("Last Updated", now);
+        existingRow.set("Status", "Active");
+        await existingRow.save();
+        updated++;
+      } else {
+        unchanged++;
+      }
     } else {
       // Collect new rows to insert at top later
       newRows.push([
@@ -275,7 +300,7 @@ async function writeListingsToSheet(
     }
   }
 
-  return { added, updated };
+  return { added, updated, unchanged };
 }
 
 // ============================================================
@@ -442,12 +467,12 @@ async function main() {
 
     // Write to Google Sheets
     console.log("\n💾 Writing to Google Sheets...");
-    const { added, updated } = await writeListingsToSheet(
+    const { added, updated, unchanged } = await writeListingsToSheet(
       sheet,
       uniqueListings,
       existingProperties
     );
-    console.log(`✅ Added: ${added}, Updated: ${updated}`);
+    console.log(`✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}`);
   } finally {
     await browser.close();
   }
