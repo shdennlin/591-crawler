@@ -1,0 +1,15 @@
+# IDE and editor
+.claude
+.vscode
+
+# Dependencies
+node_modules/
+
+# Test artifacts
+test-output.json
+test-output.csv
+test-page.html
+
+# Environment
+.env
+.env.local
