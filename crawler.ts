@@ -210,8 +210,8 @@ async function writeListingsToSheet(
         existingRow.get("Agent Type") !== listing.agentType ||
         existingRow.get("Agent Name") !== listing.agentName ||
         existingRow.get("Update Info") !== listing.updateInfo ||
-        Number(existingRow.get("Views")) !== listing.views ||
         existingRow.get("Status") !== "Active";
+      // Note: Views excluded from change detection (changes too frequently)
 
       if (hasChanges) {
         // Update existing row (preserve user columns A-C)
