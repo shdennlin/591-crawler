@@ -153,14 +153,18 @@ async function ensureDataSheet(doc: GoogleSpreadsheet) {
   return sheet;
 }
 
-async function getExistingProperties(sheet: any): Promise<Map<string, any>> {
+async function getExistingProperties(
+  sheet: any
+): Promise<Map<string, { row: any; rowIndex: number }>> {
   const rows = await sheet.getRows();
-  const map = new Map();
+  const map = new Map<string, { row: any; rowIndex: number }>();
 
-  for (const row of rows) {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
     const id = row.get("Property ID");
     if (id) {
-      map.set(id, row);
+      // rowIndex is 1-based (0 is header), so actual row = i + 1
+      map.set(id, { row, rowIndex: i + 1 });
     }
   }
 
@@ -170,8 +174,8 @@ async function getExistingProperties(sheet: any): Promise<Map<string, any>> {
 async function writeListingsToSheet(
   sheet: any,
   listings: ListingItem[],
-  existingProperties: Map<string, any>
-): Promise<{ added: number; updated: number; unchanged: number }> {
+  existingProperties: Map<string, { row: any; rowIndex: number }>
+): Promise<{ added: number; updated: number; unchanged: number; inactive: number }> {
   // Format: YYYY-MM-DD HH:MM:SS
   const now = new Date()
     .toISOString()
@@ -180,19 +184,26 @@ async function writeListingsToSheet(
   let added = 0;
   let updated = 0;
   let unchanged = 0;
+  let inactive = 0;
   const seenIds = new Set<string>();
   const newRows: any[][] = []; // Collect new rows to insert at top
 
+  // Collect updates for batch operation (columns D-U, indices 3-20)
+  const rowsToUpdate: { rowIndex: number; data: any[] }[] = [];
+  // Collect rows to mark as inactive
+  const rowsToInactivate: number[] = [];
+
   for (const listing of listings) {
     seenIds.add(listing.id);
-    const existingRow = existingProperties.get(listing.id);
+    const existing = existingProperties.get(listing.id);
 
     // Create hyperlink formula: =HYPERLINK("url", "title")
     const titleWithLink = `=HYPERLINK("${
       listing.url
     }", "${listing.title.replace(/"/g, '""')}")`;
 
-    if (existingRow) {
+    if (existing) {
+      const { row: existingRow, rowIndex } = existing;
       // Check if any data changed (compare key fields)
       const priceStr = `${listing.price}${listing.priceUnit}`;
       const tagsStr = listing.tags.join(", ");
@@ -214,24 +225,29 @@ async function writeListingsToSheet(
       // Note: Views excluded from change detection (changes too frequently)
 
       if (hasChanges) {
-        // Update existing row (preserve user columns A-C)
-        existingRow.set("Title", titleWithLink);
-        existingRow.set("Price", priceStr);
-        existingRow.set("Price (Number)", listing.priceNumber);
-        existingRow.set("Property Type", listing.propertyType);
-        existingRow.set("Size (坪)", listing.size);
-        existingRow.set("Floor", listing.floor);
-        existingRow.set("Location", listing.location);
-        existingRow.set("Metro Distance", listing.metroDistance);
-        existingRow.set("Tags", tagsStr);
-        existingRow.set("Agent Type", listing.agentType);
-        existingRow.set("Agent Name", listing.agentName);
-        existingRow.set("Update Info", listing.updateInfo);
-        existingRow.set("Views", listing.views);
-        existingRow.set("Source URL", listing.sourceUrl);
-        existingRow.set("Last Updated", now);
-        existingRow.set("Status", "Active");
-        await existingRow.save();
+        // Collect update data for batch operation (columns D-U)
+        rowsToUpdate.push({
+          rowIndex,
+          data: [
+            titleWithLink, // D: Title
+            priceStr, // E: Price
+            listing.priceNumber, // F: Price (Number)
+            listing.propertyType, // G: Property Type
+            listing.size, // H: Size
+            listing.floor, // I: Floor
+            listing.location, // J: Location
+            listing.metroDistance, // K: Metro Distance
+            tagsStr, // L: Tags
+            listing.agentType, // M: Agent Type
+            listing.agentName, // N: Agent Name
+            listing.updateInfo, // O: Update Info
+            listing.views, // P: Views
+            listing.sourceUrl, // Q: Source URL
+            null, // R: First Seen (preserve)
+            now, // S: Last Updated
+            "Active", // T: Status
+          ],
+        });
         updated++;
       } else {
         unchanged++;
@@ -265,42 +281,106 @@ async function writeListingsToSheet(
     }
   }
 
+  // Collect rows to mark as inactive
+  for (const [id, { row, rowIndex }] of existingProperties) {
+    if (!seenIds.has(id) && row.get("Status") === "Active") {
+      rowsToInactivate.push(rowIndex);
+      inactive++;
+    }
+  }
+
   // Insert new rows at the top (after header row)
   if (newRows.length > 0) {
     console.log(`  Inserting ${newRows.length} new rows at top...`);
-    // Insert blank rows at position 1 (after header)
-    await sheet.insertDimension(
-      "ROWS",
-      { startIndex: 1, endIndex: 1 + newRows.length },
-      false
-    );
-    // Load cells and set values
-    await sheet.loadCells({
-      startRowIndex: 1,
-      endRowIndex: 1 + newRows.length,
-      startColumnIndex: 0,
-      endColumnIndex: 21,
-    });
-    for (let i = 0; i < newRows.length; i++) {
-      const rowData = newRows[i];
-      for (let j = 0; j < rowData.length; j++) {
-        const cell = sheet.getCell(1 + i, j);
-        cell.value = rowData[j];
+    try {
+      // Insert blank rows at position 1 (after header)
+      await sheet.insertDimension(
+        "ROWS",
+        { startIndex: 1, endIndex: 1 + newRows.length },
+        false
+      );
+      // Load cells and set values
+      await sheet.loadCells({
+        startRowIndex: 1,
+        endRowIndex: 1 + newRows.length,
+        startColumnIndex: 0,
+        endColumnIndex: 21,
+      });
+      for (let i = 0; i < newRows.length; i++) {
+        const rowData = newRows[i];
+        for (let j = 0; j < rowData.length; j++) {
+          const cell = sheet.getCell(1 + i, j);
+          cell.value = rowData[j];
+        }
       }
+      await sheet.saveUpdatedCells();
+
+      // After inserting new rows, existing row indices shift down
+      // Adjust rowsToUpdate and rowsToInactivate indices
+      const shiftAmount = newRows.length;
+      for (const update of rowsToUpdate) {
+        update.rowIndex += shiftAmount;
+      }
+      for (let i = 0; i < rowsToInactivate.length; i++) {
+        rowsToInactivate[i] += shiftAmount;
+      }
+    } catch (error) {
+      console.error(`  ❌ Error inserting new rows:`, error);
+      throw error;
     }
-    await sheet.saveUpdatedCells();
   }
 
-  // Mark properties not found as Inactive
-  for (const [id, row] of existingProperties) {
-    if (!seenIds.has(id) && row.get("Status") === "Active") {
-      row.set("Status", "Inactive");
-      row.set("Last Updated", now);
-      await row.save();
+  // Batch update existing rows and mark inactive (single API call)
+  const allUpdateIndices = [
+    ...rowsToUpdate.map((r) => r.rowIndex),
+    ...rowsToInactivate,
+  ];
+
+  if (allUpdateIndices.length > 0) {
+    const updateCount = rowsToUpdate.length;
+    const inactiveCount = rowsToInactivate.length;
+    console.log(
+      `  Batch updating ${updateCount} rows, marking ${inactiveCount} inactive...`
+    );
+
+    try {
+      const minRow = Math.min(...allUpdateIndices);
+      const maxRow = Math.max(...allUpdateIndices);
+
+      // Load all cells that need updating (columns D-U, indices 3-20)
+      await sheet.loadCells({
+        startRowIndex: minRow,
+        endRowIndex: maxRow + 1,
+        startColumnIndex: 3, // Column D (skip user columns A-C)
+        endColumnIndex: 21, // Column U
+      });
+
+      // Apply updates
+      for (const { rowIndex, data } of rowsToUpdate) {
+        for (let col = 0; col < data.length; col++) {
+          // Skip null values (preserve existing, e.g., First Seen)
+          if (data[col] !== null) {
+            const cell = sheet.getCell(rowIndex, col + 3);
+            cell.value = data[col];
+          }
+        }
+      }
+
+      // Apply inactive status (only Last Updated and Status columns)
+      for (const rowIndex of rowsToInactivate) {
+        sheet.getCell(rowIndex, 19).value = now; // S: Last Updated
+        sheet.getCell(rowIndex, 20).value = "Inactive"; // T: Status
+      }
+
+      // Single batch save for all updates
+      await sheet.saveUpdatedCells();
+    } catch (error) {
+      console.error(`  ❌ Error in batch update:`, error);
+      throw error;
     }
   }
 
-  return { added, updated, unchanged };
+  return { added, updated, unchanged, inactive };
 }
 
 // ============================================================
@@ -467,12 +547,14 @@ async function main() {
 
     // Write to Google Sheets
     console.log("\n💾 Writing to Google Sheets...");
-    const { added, updated, unchanged } = await writeListingsToSheet(
+    const { added, updated, unchanged, inactive } = await writeListingsToSheet(
       sheet,
       uniqueListings,
       existingProperties
     );
-    console.log(`✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}`);
+    console.log(
+      `✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}, Inactive: ${inactive}`
+    );
   } finally {
     await browser.close();
   }
