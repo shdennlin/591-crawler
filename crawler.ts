@@ -35,7 +35,7 @@ const CONFIG = {
 
   // Crawling settings
   MAX_PAGES_PER_URL: 10, // Max pages per URL (30 items/page)
-  MAX_ITEMS_PER_URL: 50, // Max items to fetch per URL (0 = unlimited)
+  MAX_ITEMS_PER_URL: 30, // Max items to fetch per URL (0 = unlimited)
   REQUEST_DELAY_MS: 2000, // Base delay + 0~4000ms random (2~6 seconds)
 
   // Sheet names
@@ -208,8 +208,10 @@ async function writeListingsToSheet(
       const priceStr = `${listing.price}${listing.priceUnit}`;
       const tagsStr = listing.tags.join(", ");
 
+      // Note: Title comparison uses raw title text (not HYPERLINK formula)
+      // because sheet returns displayed value, not formula string
       const hasChanges =
-        existingRow.get("Title") !== titleWithLink ||
+        existingRow.get("Title") !== listing.title ||
         existingRow.get("Price") !== priceStr ||
         Number(existingRow.get("Price (Number)")) !== listing.priceNumber ||
         existingRow.get("Property Type") !== listing.propertyType ||
@@ -347,20 +349,21 @@ async function writeListingsToSheet(
       const minRow = Math.min(...allUpdateIndices);
       const maxRow = Math.max(...allUpdateIndices);
 
-      // Load all cells that need updating (columns D-U, indices 3-20)
+      // Load all cells that need updating (columns E-U, indices 4-20)
+      // Skip A-C (user columns) and D (Property ID - never changes)
       await sheet.loadCells({
         startRowIndex: minRow,
         endRowIndex: maxRow + 1,
-        startColumnIndex: 3, // Column D (skip user columns A-C)
-        endColumnIndex: 21, // Column U
+        startColumnIndex: 4, // Column E: Title (skip A-D)
+        endColumnIndex: 21, // Column U: Status
       });
 
-      // Apply updates
+      // Apply updates (data array maps to columns E-U, indices 4-20)
       for (const { rowIndex, data } of rowsToUpdate) {
         for (let col = 0; col < data.length; col++) {
           // Skip null values (preserve existing, e.g., First Seen)
           if (data[col] !== null) {
-            const cell = sheet.getCell(rowIndex, col + 3);
+            const cell = sheet.getCell(rowIndex, col + 4); // +4 = column E
             cell.value = data[col];
           }
         }
@@ -368,8 +371,8 @@ async function writeListingsToSheet(
 
       // Apply inactive status (only Last Updated and Status columns)
       for (const rowIndex of rowsToInactivate) {
-        sheet.getCell(rowIndex, 19).value = now; // S: Last Updated
-        sheet.getCell(rowIndex, 20).value = "Inactive"; // T: Status
+        sheet.getCell(rowIndex, 19).value = now; // T: Last Updated (index 19)
+        sheet.getCell(rowIndex, 20).value = "Inactive"; // U: Status (index 20)
       }
 
       // Single batch save for all updates
