@@ -6,7 +6,7 @@ Playwright-based crawler for rent.591.com.tw that syncs rental listings to Googl
 
 - Crawls multiple 591 search URLs via headless Chromium
 - **Configure URLs directly in Google Sheets** (no code editing needed)
-- Automatic sync every 6 hours via GitHub Actions
+- Automatic sync 4x daily (06:00, 12:00, 16:00, 22:00 UTC+8)
 - Deduplication by Property ID, tracks Active/Inactive status
 - Preserves user columns (Mark, Rating, Remarks)
 
@@ -98,6 +98,19 @@ https://rent.591.com.tw/list?region=1&kind=1&price=15000$_40000$&sort=posttime_d
 | ★ Remarks | Your notes |
 
 Remaining columns: Property ID, Title, Price, Type, Size, Floor, Location, Metro, Tags, Agent, URL, Status, etc.
+
+## Schedule
+
+Default: **4 times daily** at 06:00, 12:00, 16:00, 22:00 (UTC+8 Taiwan time)
+
+To change the schedule, edit `.github/workflows/crawl.yml`:
+```yaml
+# Local Time (UTC+8)  →  UTC Time  →  Cron
+- cron: '0 22 * * *'   # 06:00 UTC+8 → 22:00 UTC
+- cron: '0 4 * * *'    # 12:00 UTC+8 → 04:00 UTC
+```
+
+**Note:** GitHub Actions uses UTC. Subtract 8 hours from your desired UTC+8 time.
 
 ## Troubleshooting
 

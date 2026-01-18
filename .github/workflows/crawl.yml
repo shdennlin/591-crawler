@@ -1,9 +1,24 @@
 name: 591 Rental Crawler
 
+# ┌─────────────────────────────────────────────────────────────────┐
+# │  SCHEDULE CONFIGURATION                                         │
+# │                                                                 │
+# │  To change schedule times:                                      │
+# │  1. Edit the desired times below (in your local timezone)       │
+# │  2. Convert to UTC: subtract 8 hours for UTC+8 (Taiwan)         │
+# │  3. Update the cron expressions                                 │
+# │                                                                 │
+# │  Current: 06:00, 12:00, 16:00, 22:00 (UTC+8 Taiwan)             │
+# │  Cron format: 'minute hour * * *' (runs daily)                  │
+# └─────────────────────────────────────────────────────────────────┘
 on:
   schedule:
-    # Run every 6 hours
-    - cron: '0 */6 * * *'
+    # Local Time (UTC+8)  →  UTC Time  →  Cron
+    # ─────────────────────────────────────────
+    - cron: '0 22 * * *'   # 06:00 UTC+8 → 22:00 UTC
+    - cron: '0 4 * * *'    # 12:00 UTC+8 → 04:00 UTC
+    - cron: '0 8 * * *'    # 16:00 UTC+8 → 08:00 UTC
+    - cron: '0 14 * * *'   # 22:00 UTC+8 → 14:00 UTC
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
