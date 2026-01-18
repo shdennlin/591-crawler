@@ -25,14 +25,6 @@ import { JWT } from "google-auth-library";
 // CONFIGURATION - Edit these values
 // ============================================================
 const CONFIG = {
-  // URLs to crawl (same format as your Config sheet)
-  // Use sort=posttime_desc to get newest listings first
-  URLS: [
-    "https://rent.591.com.tw/list?region=1&kind=1&section=5,3,1,2&price=15000$_40000$&sort=posttime_desc&layout=3,4,2",
-    "https://rent.591.com.tw/list?region=1&kind=1&metro=168&price=15000$_40000$&sort=posttime_desc&station=4181,4242,4187,4221&layout=3,4,2",
-    // Add more URLs here
-  ],
-
   // Crawling settings
   MAX_PAGES_PER_URL: 10, // Max pages per URL (30 items/page)
   MAX_ITEMS_PER_URL: 30, // Max items to fetch per URL (0 = unlimited)
@@ -149,6 +141,92 @@ async function ensureDataSheet(doc: GoogleSpreadsheet) {
   }
 
   return sheet;
+}
+
+
+// Default URLs used when Config sheet is empty or doesn't exist
+const DEFAULT_URLS = [
+  "https://rent.591.com.tw/list?region=1&kind=1&section=5,3,1,2&price=15000$_40000$&sort=posttime_desc&layout=3,4,2",
+  "https://rent.591.com.tw/list?region=1&kind=1&metro=168&price=15000$_40000$&sort=posttime_desc&station=4181,4242,4187,4221&layout=3,4,2",
+];
+
+async function formatConfigSheet(sheet: any, dataRowCount: number) {
+  // Load header + data rows (row 0 = header, rows 1+ = data)
+  await sheet.loadCells({
+    startRowIndex: 0,
+    endRowIndex: 1 + dataRowCount,
+    startColumnIndex: 0,
+    endColumnIndex: 3,
+  });
+
+  // Format header row (row 0) - Light blue background
+  const headerNotes = [
+    "Enter 591.com.tw search URLs here. You can modify these URLs anytime.",
+    "Optional: A friendly description for this search",
+    "Set to 'Active' to crawl this URL, or 'Inactive' to skip it",
+  ];
+
+  for (let col = 0; col < 3; col++) {
+    const cell = sheet.getCell(0, col);
+    cell.backgroundColor = { red: 0.89, green: 0.95, blue: 0.99 }; // Light blue #E3F2FD
+    cell.textFormat = { bold: true };
+    cell.note = headerNotes[col];
+  }
+
+  // Format data rows - Light yellow background to indicate editable
+  for (let row = 1; row <= dataRowCount; row++) {
+    for (let col = 0; col < 3; col++) {
+      const cell = sheet.getCell(row, col);
+      cell.backgroundColor = { red: 1.0, green: 0.99, blue: 0.91 }; // Light yellow #FFFDE7
+    }
+  }
+
+  await sheet.saveUpdatedCells();
+  console.log("  ✨ Config sheet formatted with colors and notes");
+}
+
+async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
+  let sheet = doc.sheetsByTitle[CONFIG.SHEET_CONFIG];
+
+  if (!sheet) {
+    console.log(`Creating "${CONFIG.SHEET_CONFIG}" sheet...`);
+    sheet = await doc.addSheet({
+      title: CONFIG.SHEET_CONFIG,
+      headerValues: ["URL", "Description", "Status"],
+    });
+
+    // Add default URLs as initial data
+    await sheet.addRows(
+      DEFAULT_URLS.map((url, i) => ({
+        URL: url,
+        Description: `Search ${i + 1}`,
+        Status: "Active",
+      }))
+    );
+
+    // Format header row and data cells
+    await formatConfigSheet(sheet, DEFAULT_URLS.length);
+  }
+
+  // Read active URLs from sheet
+  const rows = await sheet.getRows();
+  const activeUrls: string[] = [];
+
+  for (const row of rows) {
+    const url = row.get("URL");
+    const status = row.get("Status");
+    if (url && status?.toLowerCase() === "active") {
+      activeUrls.push(url);
+    }
+  }
+
+  if (activeUrls.length === 0) {
+    console.warn("⚠️  No active URLs found in Config sheet. Using defaults.");
+    return DEFAULT_URLS;
+  }
+
+  console.log(`📋 Loaded ${activeUrls.length} active URL(s) from Config sheet`);
+  return activeUrls;
 }
 
 async function getExistingProperties(
@@ -524,6 +602,10 @@ async function main() {
   // Connect to Google Sheets
   console.log("\n📊 Connecting to Google Sheets...");
   const doc = await connectToGoogleSheets();
+
+  // Load URLs from Config sheet (creates if not exists)
+  const urls = await ensureConfigSheet(doc);
+
   const sheet = await ensureDataSheet(doc);
   const existingProperties = await getExistingProperties(sheet);
   console.log(`Found ${existingProperties.size} existing properties in sheet`);
@@ -535,8 +617,8 @@ async function main() {
   try {
     const allListings: ListingItem[] = [];
 
-    // Crawl each URL
-    for (const url of CONFIG.URLS) {
+    // Crawl each URL from Config sheet
+    for (const url of urls) {
       console.log(`\n📍 Crawling: ${url}`);
       const listings = await crawlUrl(browser, url);
       allListings.push(...listings);
