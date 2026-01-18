@@ -69,8 +69,7 @@ interface ListingItem {
 interface SheetRow {
   "Property ID": string;
   Title: string; // Contains HYPERLINK formula with URL
-  Price: string;
-  "Price (Number)": number;
+  Price: number; // Numeric value, displayed with format "#,##0元/月"
   "Property Type": string;
   "Size (坪)": string;
   Floor: string;
@@ -130,8 +129,7 @@ async function ensureDataSheet(doc: GoogleSpreadsheet) {
         "★ Remarks",
         "Property ID",
         "Title", // Hyperlink to property URL
-        "Price",
-        "Price (Number)",
+        "Price", // Numeric value with display format "#,##0元/月"
         "Property Type",
         "Size (坪)",
         "Floor",
@@ -188,7 +186,7 @@ async function writeListingsToSheet(
   const seenIds = new Set<string>();
   const newRows: any[][] = []; // Collect new rows to insert at top
 
-  // Collect updates for batch operation (columns D-U, indices 3-20)
+  // Collect updates for batch operation (columns E-T, indices 4-19)
   const rowsToUpdate: { rowIndex: number; data: any[] }[] = [];
   // Collect rows to mark as inactive
   const rowsToInactivate: number[] = [];
@@ -205,15 +203,13 @@ async function writeListingsToSheet(
     if (existing) {
       const { row: existingRow, rowIndex } = existing;
       // Check if any data changed (compare key fields)
-      const priceStr = `${listing.price}${listing.priceUnit}`;
       const tagsStr = listing.tags.join(", ");
 
       // Note: Title comparison uses raw title text (not HYPERLINK formula)
       // because sheet returns displayed value, not formula string
       const hasChanges =
         existingRow.get("Title") !== listing.title ||
-        existingRow.get("Price") !== priceStr ||
-        Number(existingRow.get("Price (Number)")) !== listing.priceNumber ||
+        Number(existingRow.get("Price")) !== listing.priceNumber ||
         existingRow.get("Property Type") !== listing.propertyType ||
         existingRow.get("Size (坪)") !== listing.size ||
         existingRow.get("Floor") !== listing.floor ||
@@ -227,27 +223,26 @@ async function writeListingsToSheet(
       // Note: Views excluded from change detection (changes too frequently)
 
       if (hasChanges) {
-        // Collect update data for batch operation (columns D-U)
+        // Collect update data for batch operation (columns E-T, indices 4-19)
         rowsToUpdate.push({
           rowIndex,
           data: [
-            titleWithLink, // D: Title
-            priceStr, // E: Price
-            listing.priceNumber, // F: Price (Number)
-            listing.propertyType, // G: Property Type
-            listing.size, // H: Size
-            listing.floor, // I: Floor
-            listing.location, // J: Location
-            listing.metroDistance, // K: Metro Distance
-            tagsStr, // L: Tags
-            listing.agentType, // M: Agent Type
-            listing.agentName, // N: Agent Name
-            listing.updateInfo, // O: Update Info
-            listing.views, // P: Views
-            listing.sourceUrl, // Q: Source URL
-            null, // R: First Seen (preserve)
-            now, // S: Last Updated
-            "Active", // T: Status
+            titleWithLink, // E: Title (index 4)
+            listing.priceNumber, // F: Price (index 5) - numeric with format
+            listing.propertyType, // G: Property Type (index 6)
+            listing.size, // H: Size (index 7)
+            listing.floor, // I: Floor (index 8)
+            listing.location, // J: Location (index 9)
+            listing.metroDistance, // K: Metro Distance (index 10)
+            tagsStr, // L: Tags (index 11)
+            listing.agentType, // M: Agent Type (index 12)
+            listing.agentName, // N: Agent Name (index 13)
+            listing.updateInfo, // O: Update Info (index 14)
+            listing.views, // P: Views (index 15)
+            listing.sourceUrl, // Q: Source URL (index 16)
+            null, // R: First Seen (index 17) - preserve
+            now, // S: Last Updated (index 18)
+            "Active", // T: Status (index 19)
           ],
         });
         updated++;
@@ -257,27 +252,26 @@ async function writeListingsToSheet(
     } else {
       // Collect new rows to insert at top later
       newRows.push([
-        "", // ★ Mark
-        "", // ★ Rating
-        "", // ★ Remarks
-        listing.id,
-        titleWithLink,
-        `${listing.price}${listing.priceUnit}`,
-        listing.priceNumber,
-        listing.propertyType,
-        listing.size,
-        listing.floor,
-        listing.location,
-        listing.metroDistance,
-        listing.tags.join(", "),
-        listing.agentType,
-        listing.agentName,
-        listing.updateInfo,
-        listing.views,
-        listing.sourceUrl,
-        now, // First Seen
-        now, // Last Updated
-        "Active",
+        "", // A: ★ Mark (index 0)
+        "", // B: ★ Rating (index 1)
+        "", // C: ★ Remarks (index 2)
+        listing.id, // D: Property ID (index 3)
+        titleWithLink, // E: Title (index 4)
+        listing.priceNumber, // F: Price (index 5) - numeric with format
+        listing.propertyType, // G: Property Type (index 6)
+        listing.size, // H: Size (index 7)
+        listing.floor, // I: Floor (index 8)
+        listing.location, // J: Location (index 9)
+        listing.metroDistance, // K: Metro Distance (index 10)
+        listing.tags.join(", "), // L: Tags (index 11)
+        listing.agentType, // M: Agent Type (index 12)
+        listing.agentName, // N: Agent Name (index 13)
+        listing.updateInfo, // O: Update Info (index 14)
+        listing.views, // P: Views (index 15)
+        listing.sourceUrl, // Q: Source URL (index 16)
+        now, // R: First Seen (index 17)
+        now, // S: Last Updated (index 18)
+        "Active", // T: Status (index 19)
       ]);
       added++;
     }
@@ -301,18 +295,22 @@ async function writeListingsToSheet(
         { startIndex: 1, endIndex: 1 + newRows.length },
         false
       );
-      // Load cells and set values
+      // Load cells and set values (columns A-T, 20 columns total)
       await sheet.loadCells({
         startRowIndex: 1,
         endRowIndex: 1 + newRows.length,
         startColumnIndex: 0,
-        endColumnIndex: 21,
+        endColumnIndex: 20, // Column T: Status (index 19)
       });
       for (let i = 0; i < newRows.length; i++) {
         const rowData = newRows[i];
         for (let j = 0; j < rowData.length; j++) {
           const cell = sheet.getCell(1 + i, j);
           cell.value = rowData[j];
+          // Apply number format to Price column (index 5)
+          if (j === 5 && rowData[j] !== null && rowData[j] !== "") {
+            cell.numberFormat = { type: "NUMBER", pattern: '#,##0"元/月"' };
+          }
         }
       }
       await sheet.saveUpdatedCells();
@@ -349,30 +347,34 @@ async function writeListingsToSheet(
       const minRow = Math.min(...allUpdateIndices);
       const maxRow = Math.max(...allUpdateIndices);
 
-      // Load all cells that need updating (columns E-U, indices 4-20)
+      // Load all cells that need updating (columns E-T, indices 4-19)
       // Skip A-C (user columns) and D (Property ID - never changes)
       await sheet.loadCells({
         startRowIndex: minRow,
         endRowIndex: maxRow + 1,
         startColumnIndex: 4, // Column E: Title (skip A-D)
-        endColumnIndex: 21, // Column U: Status
+        endColumnIndex: 20, // Column T: Status (index 19)
       });
 
-      // Apply updates (data array maps to columns E-U, indices 4-20)
+      // Apply updates (data array maps to columns E-T, indices 4-19)
       for (const { rowIndex, data } of rowsToUpdate) {
         for (let col = 0; col < data.length; col++) {
           // Skip null values (preserve existing, e.g., First Seen)
           if (data[col] !== null) {
             const cell = sheet.getCell(rowIndex, col + 4); // +4 = column E
             cell.value = data[col];
+            // Apply number format to Price column (col 1 = index 5 after +4 offset)
+            if (col === 1) {
+              cell.numberFormat = { type: "NUMBER", pattern: '#,##0"元/月"' };
+            }
           }
         }
       }
 
       // Apply inactive status (only Last Updated and Status columns)
       for (const rowIndex of rowsToInactivate) {
-        sheet.getCell(rowIndex, 19).value = now; // T: Last Updated (index 19)
-        sheet.getCell(rowIndex, 20).value = "Inactive"; // U: Status (index 20)
+        sheet.getCell(rowIndex, 18).value = now; // S: Last Updated (index 18)
+        sheet.getCell(rowIndex, 19).value = "Inactive"; // T: Status (index 19)
       }
 
       // Single batch save for all updates
