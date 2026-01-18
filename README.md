@@ -1,253 +1,112 @@
 # 591 Rental Housing Crawler
 
-A Playwright-based crawler for rent.591.com.tw that collects rental property listings and syncs them to Google Sheets via GitHub Actions.
+Playwright-based crawler for rent.591.com.tw that syncs rental listings to Google Sheets via GitHub Actions.
 
 ## Features
 
-- Crawls multiple 591 search URLs using headless Chromium
-- Extracts detailed property information from `__NUXT__` data
-- Automatic sync to Google Sheets via API
-- Scheduled execution via GitHub Actions (every 6 hours)
-- Automatic deduplication based on Property ID
-- Tracks property status (Active/Inactive)
+- Crawls multiple 591 search URLs via headless Chromium
+- **Configure URLs directly in Google Sheets** (no code editing needed)
+- Automatic sync every 6 hours via GitHub Actions
+- Deduplication by Property ID, tracks Active/Inactive status
 - Preserves user columns (Mark, Rating, Remarks)
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  GitHub Actions (scheduled every 6 hours)                   │
-│       │                                                     │
-│       ▼                                                     │
-│  ┌──────────────┐    Google Sheets API    ┌──────────────┐ │
-│  │  Playwright  │ ───────────────────────►│ Google Sheet │ │
-│  │  Crawler     │    (Service Account)    │   (Data)     │ │
-│  └──────────────┘                         └──────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
 
 ## Quick Start
 
-### 1. Create Google Cloud Service Account
+### 1. Google Cloud Setup
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or select existing)
-3. Enable **Google Sheets API**:
-   - **APIs & Services** → **Library** → Search "Google Sheets API" → **Enable**
-4. Create Service Account:
-   - **APIs & Services** → **Credentials** → **Create Credentials** → **Service Account**
-   - Name: `591-crawler`
-   - **Skip** the "Grant this service account access" step (no roles needed)
-   - **Skip** the "Grant users access" step
-   - Click **Done**
-5. Create Key:
-   - Click on your new service account → **Keys** tab → **Add Key** → **Create new key** → **JSON**
-   - Save the downloaded JSON file
+2. Create project → Enable **Google Sheets API**
+3. Create **Service Account** → Download JSON key
 
-> **Note**: No IAM roles are needed because we grant access by sharing the Google Sheet directly with the service account email (Step 2).
+### 2. Share Google Sheet
 
-### 2. Share Google Sheet with Service Account
-
-1. Open your Google Sheet (or create a new one)
-2. Copy the **Sheet ID** from URL:
+1. Create/open a Google Sheet, copy the **Sheet ID** from URL:
    ```
    https://docs.google.com/spreadsheets/d/[SHEET_ID]/edit
    ```
-3. Click **Share** → Add the service account email (from JSON: `client_email`)
-4. Give it **Editor** access
+2. **Share** with service account email (`client_email` from JSON) as **Editor**
 
-### 3. Add GitHub Secrets
+### 3. GitHub Secrets
 
-Go to your GitHub repo → **Settings** → **Secrets and variables** → **Actions** → **New repository secret**
+Add to repo **Settings** → **Secrets** → **Actions**:
 
-| Secret Name | Value |
-|-------------|-------|
+| Secret | Value |
+|--------|-------|
 | `GOOGLE_SHEETS_ID` | Sheet ID from URL |
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | `client_email` from JSON |
-| `GOOGLE_PRIVATE_KEY` | `private_key` from JSON (include BEGIN/END lines) |
+| `GOOGLE_PRIVATE_KEY` | `private_key` from JSON |
 
-### 4. Configure Search URLs
-
-Edit `crawler.ts` and modify the `URLS` array:
-
-```typescript
-const CONFIG = {
-  URLS: [
-    'https://rent.591.com.tw/list?region=3&kind=3&other=near_subway,rental-subsidy',
-    'https://rent.591.com.tw/list?region=1&kind=1&section=8,9&price=10000$_30000$',
-    // Add more URLs...
-  ],
-  MAX_PAGES_PER_URL: 10,
-  REQUEST_DELAY_MS: 2000,
-};
-```
-
-### 5. Deploy
+### 4. First Run
 
 ```bash
-git add .
-git commit -m "Configure crawler"
-git push
+git push  # or Actions → Run workflow
 ```
 
-Then go to **Actions** → **Run workflow** to test!
+On first run, the crawler creates a **Config** sheet with instructions. Add your URLs there:
+
+| URL | Description | Status |
+|-----|-------------|--------|
+| `https://rent.591.com.tw/list?region=1&...` | Taipei search | Active |
+
+Set **Status** to `Active` to crawl, `Inactive` to skip.
 
 ## Local Development
-
-### Prerequisites
 
 ```bash
 npm install
 npx playwright install chromium
-```
 
-### Test without Google Sheets
-
-```bash
-npm test
-# Outputs: test-output.json, test-output.csv
-```
-
-### Test with Google Sheets
-
-```bash
+# Set environment variables
 export GOOGLE_SHEETS_ID="your-sheet-id"
-export GOOGLE_SERVICE_ACCOUNT_EMAIL="service-account@project.iam.gserviceaccount.com"
+export GOOGLE_SERVICE_ACCOUNT_EMAIL="...@...iam.gserviceaccount.com"
 export GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 
 npm run crawl
 ```
 
-## URL Parameters Reference
+## URL Parameters
 
-### How to Build Your Search URL
+Build URLs at [rent.591.com.tw](https://rent.591.com.tw) using filters, then copy the URL.
 
-1. Go to [rent.591.com.tw](https://rent.591.com.tw)
-2. Set your search filters (region, price, type, etc.)
-3. Copy the URL from your browser
+| Parameter | Example | Description |
+|-----------|---------|-------------|
+| `region` | `1` | City (1=台北, 3=新北, 8=台中) |
+| `kind` | `1` | Type (1=整層, 2=獨立套房, 3=分租套房) |
+| `price` | `10000$_30000$` | Price range |
+| `section` | `1,5,10` | District codes |
+| `other` | `near_subway,pet` | Filters (近捷運, 可養寵物) |
 
-### Common Parameters
-
-| Parameter | Description | Example |
-|-----------|-------------|---------|
-| `region` | City/County code | `region=1` (台北市) |
-| `kind` | Property type | `kind=3` (分租套房) |
-| `section` | District codes | `section=1,5,10` |
-| `price` | Price range | `price=10000$_30000$` |
-| `layout` | Room count | `layout=2,3` |
-| `other` | Special filters | `other=near_subway,pet` |
-| `area` | Size range (坪) | `area=10$_20$` |
-
-### Region Codes
-
-| Code | City | Code | City |
-|------|------|------|------|
-| 1 | 台北市 | 3 | 新北市 |
-| 6 | 桃園市 | 8 | 台中市 |
-| 15 | 台南市 | 17 | 高雄市 |
-
-### Property Types (kind)
-
-| Code | Type |
-|------|------|
-| 1 | 整層住家 |
-| 2 | 獨立套房 |
-| 3 | 分租套房 |
-| 4 | 雅房 |
-
-### Special Filters (other)
-
-| Value | Description |
-|-------|-------------|
-| `near_subway` | 近捷運 |
-| `rental-subsidy` | 租金補貼 |
-| `pet` | 可養寵物 |
-| `cook` | 可開伙 |
-| `balcony` | 有陽台 |
-| `lift` | 有電梯 |
-
-### Example URLs
-
-```bash
-# 新北市分租套房，近捷運，租金補貼
-https://rent.591.com.tw/list?region=3&kind=3&other=near_subway,rental-subsidy
-
-# 台北市大安區/信義區，整層住家，1-3萬
-https://rent.591.com.tw/list?region=1&kind=1&section=8,9&price=10000$_30000$
-
-# 高雄市獨立套房，可養寵物
-https://rent.591.com.tw/list?region=17&kind=2&other=pet
+**Example:**
+```
+https://rent.591.com.tw/list?region=1&kind=1&price=15000$_40000$&sort=posttime_desc
 ```
 
-## Google Sheet Structure
+## Sheet Structure
 
-The first 3 columns are **user columns** (preserved during updates):
+### Config Sheet
+| Column | Purpose |
+|--------|---------|
+| URL | 591 search URL |
+| Description | Your label |
+| Status | Active / Inactive |
 
-| Column | Field | Description |
-|--------|-------|-------------|
-| A | ★ Mark | Your flags (✓, ✗, ⭐) |
-| B | ★ Rating | Your ratings |
-| C | ★ Remarks | Your notes |
-| D | Property ID | Unique ID from 591 |
-| E | Title | Listing title |
-| F | Price | Monthly rent |
-| G | Price (Number) | Numeric price |
-| H | Property Type | 整層/套房/雅房 |
-| I | Size (坪) | Size in 坪 |
-| J | Floor | Floor info |
-| K | Location | District & street |
-| L | Metro Distance | Distance to metro |
-| M | Tags | Features |
-| N | Agent Type | 仲介/屋主 |
-| O | Agent Name | Contact name |
-| P | Update Info | Last update from 591 |
-| Q | Views | View count |
-| R | URL | Property URL |
-| S | Source URL | Search URL |
-| T | First Seen | Date first crawled |
-| U | Last Updated | Date last updated |
-| V | Status | Active/Inactive |
+### Data Sheet
+| Columns A-C | User columns (preserved) |
+|-------------|--------------------------|
+| ★ Mark | Your flags |
+| ★ Rating | Your ratings |
+| ★ Remarks | Your notes |
 
-## Files
-
-```
-591_crawler/
-├── crawler.ts           # Main crawler with Google Sheets sync
-├── test-crawler.ts      # Local test (outputs to files)
-├── package.json         # Dependencies
-├── .github/
-│   └── workflows/
-│       └── crawl.yml    # GitHub Actions workflow
-├── Code.gs              # (Deprecated) Google Apps Script version
-└── README.md
-```
+Remaining columns: Property ID, Title, Price, Type, Size, Floor, Location, Metro, Tags, Agent, URL, Status, etc.
 
 ## Troubleshooting
 
-### "Missing environment variables"
-- Ensure all 3 GitHub secrets are set correctly
-- Check that `GOOGLE_PRIVATE_KEY` includes the full key with newlines
-
-### "Could not extract __NUXT__ data"
-- The page structure may have changed
-- Try running locally to debug: `npm test`
-
-### GitHub Actions not running
-- Check **Actions** tab for errors
-- Verify secrets are in **Settings** → **Secrets and variables** → **Actions**
-
-## Notes
-
-### Why Not Google Apps Script?
-
-The original `Code.gs` used Google Apps Script with `UrlFetchApp`, but 591's CloudFront CDN blocks Google's server IPs. The Playwright approach works because:
-1. GitHub Actions uses different IP ranges
-2. Playwright executes JavaScript to decode the obfuscated `__NUXT__` data
-
-### Rate Limiting
-
-The crawler includes a 2-second delay between requests (`REQUEST_DELAY_MS`). Adjust if needed to avoid being blocked.
+| Issue | Solution |
+|-------|----------|
+| "Missing environment variables" | Check all 3 GitHub secrets |
+| "NO URLS CONFIGURED" | Add URLs to Config sheet with Status=Active |
+| "Could not extract __NUXT__" | Page structure changed; run locally to debug |
 
 ## License
 
-For educational purposes only. Please respect 591's terms of service.
+For educational purposes only. Respect 591's terms of service.
