@@ -143,29 +143,24 @@ async function ensureDataSheet(doc: GoogleSpreadsheet) {
   return sheet;
 }
 
-
-// Default URLs used when Config sheet is empty or doesn't exist
-const DEFAULT_URLS = [
-  "https://rent.591.com.tw/list?region=1&kind=1&section=5,3,1,2&price=15000$_40000$&sort=posttime_desc&layout=3,4,2",
-  "https://rent.591.com.tw/list?region=1&kind=1&metro=168&price=15000$_40000$&sort=posttime_desc&station=4181,4242,4187,4221&layout=3,4,2",
-];
-
-async function formatConfigSheet(sheet: any, dataRowCount: number) {
-  // Load header + data rows (row 0 = header, rows 1+ = data)
+async function formatConfigSheet(sheet: any) {
+  // Load cells for columns A-F (data columns + helper columns)
+  // Rows: header (0), example (1), instructions (2-6)
   await sheet.loadCells({
     startRowIndex: 0,
-    endRowIndex: 1 + dataRowCount,
+    endRowIndex: 7,
     startColumnIndex: 0,
-    endColumnIndex: 3,
+    endColumnIndex: 6,
   });
 
-  // Format header row (row 0) - Light blue background
+  // === Column A-C: Data columns ===
   const headerNotes = [
     "Enter 591.com.tw search URLs here. You can modify these URLs anytime.",
     "Optional: A friendly description for this search",
     "Set to 'Active' to crawl this URL, or 'Inactive' to skip it",
   ];
 
+  // Format header row (row 0) - Light blue background
   for (let col = 0; col < 3; col++) {
     const cell = sheet.getCell(0, col);
     cell.backgroundColor = { red: 0.89, green: 0.95, blue: 0.99 }; // Light blue #E3F2FD
@@ -173,16 +168,62 @@ async function formatConfigSheet(sheet: any, dataRowCount: number) {
     cell.note = headerNotes[col];
   }
 
-  // Format data rows - Light yellow background to indicate editable
-  for (let row = 1; row <= dataRowCount; row++) {
-    for (let col = 0; col < 3; col++) {
-      const cell = sheet.getCell(row, col);
-      cell.backgroundColor = { red: 1.0, green: 0.99, blue: 0.91 }; // Light yellow #FFFDE7
+  // === Column D: Spacer ===
+  // (empty column for visual separation)
+
+  // === Column E-F: Helper/Instructions columns ===
+  const helperContent = [
+    // Row 0: Helper header
+    { col: 4, row: 0, value: "📖 Instructions", bold: true },
+    { col: 5, row: 0, value: "", bold: false },
+
+    // Row 1: Example header
+    { col: 4, row: 1, value: "Example:", bold: true },
+    { col: 5, row: 1, value: "", bold: false },
+
+    // Row 2: Example URL
+    {
+      col: 4,
+      row: 2,
+      value: "URL:",
+      bold: false,
+    },
+    {
+      col: 5,
+      row: 2,
+      value: "https://rent.591.com.tw/list?region=1&kind=1&price=15000$_40000$&sort=posttime_desc",
+      bold: false,
+    },
+
+    // Row 3: Example Description
+    { col: 4, row: 3, value: "Description:", bold: false },
+    { col: 5, row: 3, value: "Taipei < 40k", bold: false },
+
+    // Row 4: Example Status
+    { col: 4, row: 4, value: "Status:", bold: false },
+    { col: 5, row: 4, value: "Active", bold: false },
+
+    // Row 5: Tips header
+    { col: 4, row: 5, value: "💡 Tips:", bold: true },
+    { col: 5, row: 5, value: "", bold: false },
+
+    // Row 6: Tips content
+    { col: 4, row: 6, value: "• Set Status to 'Inactive' to skip a URL", bold: false },
+    { col: 5, row: 6, value: "• Get URLs from 591.com.tw search page", bold: false },
+  ];
+
+  // Apply helper content with gray background
+  for (const item of helperContent) {
+    const cell = sheet.getCell(item.row, item.col);
+    cell.value = item.value;
+    cell.backgroundColor = { red: 0.95, green: 0.95, blue: 0.95 }; // Light gray #F2F2F2
+    if (item.bold) {
+      cell.textFormat = { bold: true };
     }
   }
 
   await sheet.saveUpdatedCells();
-  console.log("  ✨ Config sheet formatted with colors and notes");
+  console.log("  ✨ Config sheet formatted with colors, notes, and instructions");
 }
 
 async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
@@ -195,17 +236,8 @@ async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
       headerValues: ["URL", "Description", "Status"],
     });
 
-    // Add default URLs as initial data
-    await sheet.addRows(
-      DEFAULT_URLS.map((url, i) => ({
-        URL: url,
-        Description: `Search ${i + 1}`,
-        Status: "Active",
-      }))
-    );
-
-    // Format header row and data cells
-    await formatConfigSheet(sheet, DEFAULT_URLS.length);
+    // Format and add helper instructions
+    await formatConfigSheet(sheet);
   }
 
   // Read active URLs from sheet
@@ -221,8 +253,21 @@ async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
   }
 
   if (activeUrls.length === 0) {
-    console.warn("⚠️  No active URLs found in Config sheet. Using defaults.");
-    return DEFAULT_URLS;
+    console.log("\n" + "=".repeat(60));
+    console.log("⚠️  NO URLS CONFIGURED");
+    console.log("=".repeat(60));
+    console.log("\nPlease add URLs to the Config sheet in Google Sheets:");
+    console.log(`  📋 Sheet: "${CONFIG.SHEET_CONFIG}"`);
+    console.log("\nSee the instructions on the right side of the sheet (columns E-F)");
+    console.log("or follow this format:");
+    console.log("  | URL                              | Description | Status |");
+    console.log("  |----------------------------------|-------------|--------|");
+    console.log("  | https://rent.591.com.tw/list?... | My search   | Active |");
+    console.log("\nSet Status to 'Active' for URLs you want to crawl.");
+    console.log("Run the crawler again after configuring the sheet.");
+    console.log("=".repeat(60) + "\n");
+    
+    process.exit(0);
   }
 
   console.log(`📋 Loaded ${activeUrls.length} active URL(s) from Config sheet`);
