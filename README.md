@@ -36,6 +36,10 @@ Add to repo **Settings** → **Secrets** → **Actions**:
 | `GOOGLE_SERVICE_ACCOUNT_EMAIL` | `client_email` from JSON |
 | `GOOGLE_PRIVATE_KEY` | `private_key` from JSON |
 
+**Multiple Sheets** (optional): Use `GOOGLE_SHEETS_ID_<name>` pattern:
+| `GOOGLE_SHEETS_ID_WORK` | Work sheet ID |
+| `GOOGLE_SHEETS_ID_PERSONAL` | Personal sheet ID |
+
 ### 4. First Run
 
 ```bash
@@ -49,6 +53,20 @@ On first run, the crawler creates a **Config** sheet with instructions. Add your
 | `https://rent.591.com.tw/list?region=1&...` | Taipei search | Active |
 
 Set **Status** to `Active` to crawl, `Inactive` to skip.
+
+## Multiple Sheets
+
+Sync to multiple Google Sheets by adding secrets with `GOOGLE_SHEETS_ID_<NAME>` pattern:
+
+| Secret | Description |
+|--------|-------------|
+| `GOOGLE_SHEETS_ID` | Default sheet |
+| `GOOGLE_SHEETS_ID_WORK` | Work sheet |
+| `GOOGLE_SHEETS_ID_PERSONAL` | Personal sheet |
+
+**No workflow file changes needed** - secrets are auto-discovered at runtime!
+
+Each sheet has its own **Config** tab with separate URLs. The crawler processes all configured sheets, continuing even if one fails.
 
 ## Local Development
 

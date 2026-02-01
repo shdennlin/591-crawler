@@ -40,9 +40,29 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium
 
-      - name: Run crawler with Google Sheets sync
+      # ─────────────────────────────────────────────────────────────────
+      # MULTIPLE SHEETS SUPPORT
+      # ─────────────────────────────────────────────────────────────────
+      # To add more sheets, simply add secrets with GOOGLE_SHEETS_ID_<NAME> pattern:
+      #   - GOOGLE_SHEETS_ID (default)
+      #   - GOOGLE_SHEETS_ID_WORK
+      #   - GOOGLE_SHEETS_ID_PERSONAL
+      # No workflow file changes needed - secrets are auto-discovered!
+      # ─────────────────────────────────────────────────────────────────
+
+      - name: Load Google Sheets configuration
+        run: |
+          # Auto-discover all GOOGLE_SHEETS_ID* secrets and export as env vars
+          echo '${{ toJson(secrets) }}' | jq -r '
+            to_entries
+            | .[]
+            | select(.key | startswith("GOOGLE_SHEETS_ID"))
+            | "\(.key)<<EOF\n\(.value)\nEOF"
+          ' >> $GITHUB_ENV
+        shell: bash
+
+      - name: Run crawler
         env:
-          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
           GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
           GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
         run: npx tsx crawler.ts

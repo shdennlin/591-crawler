@@ -16,3 +16,4 @@ test-page.html
 # Environment
 .env
 .env.local
+.env.backup

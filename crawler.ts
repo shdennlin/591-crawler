@@ -35,6 +35,25 @@ const CONFIG = {
   SHEET_CONFIG: "Config",
 };
 
+
+/**
+ * Parse environment variables to find all configured Google Sheets.
+ * Supports: GOOGLE_SHEETS_ID (default) and GOOGLE_SHEETS_ID_<name> (named sheets)
+ */
+function getSheetConfigs(): { name: string; id: string }[] {
+  const configs: { name: string; id: string }[] = [];
+
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("GOOGLE_SHEETS_ID") && value) {
+      const suffix = key.replace("GOOGLE_SHEETS_ID", "");
+      const name = suffix ? suffix.replace(/^_/, "").toLowerCase() : "default";
+      configs.push({ name, id: value });
+    }
+  }
+
+  return configs;
+}
+
 // ============================================================
 // TYPES
 // ============================================================
@@ -81,15 +100,13 @@ interface SheetRow {
 // ============================================================
 // GOOGLE SHEETS CONNECTION
 // ============================================================
-async function connectToGoogleSheets(): Promise<GoogleSpreadsheet> {
+async function connectToGoogleSheets(sheetId: string): Promise<GoogleSpreadsheet> {
   const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const privateKey = process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n");
-  const sheetId = process.env.GOOGLE_SHEETS_ID;
 
-  if (!serviceAccountEmail || !privateKey || !sheetId) {
+  if (!serviceAccountEmail || !privateKey) {
     throw new Error(
-      "Missing environment variables. Required:\n" +
-        "  GOOGLE_SHEETS_ID\n" +
+      "Missing credentials. Required:\n" +
         "  GOOGLE_SERVICE_ACCOUNT_EMAIL\n" +
         "  GOOGLE_PRIVATE_KEY"
     );
@@ -639,14 +656,17 @@ async function crawlUrl(
 // ============================================================
 // MAIN
 // ============================================================
-async function main() {
-  console.log("=".repeat(60));
-  console.log("591 Rental Crawler with Google Sheets");
+/**
+ * Process a single Google Sheet: crawl URLs and write listings
+ */
+async function processSheet(sheetName: string, sheetId: string): Promise<void> {
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`📊 Processing: ${sheetName}`);
   console.log("=".repeat(60));
 
   // Connect to Google Sheets
   console.log("\n📊 Connecting to Google Sheets...");
-  const doc = await connectToGoogleSheets();
+  const doc = await connectToGoogleSheets(sheetId);
 
   // Load URLs from Config sheet (creates if not exists)
   const urls = await ensureConfigSheet(doc);
@@ -691,9 +711,55 @@ async function main() {
     await browser.close();
   }
 
-  console.log("\n" + "=".repeat(60));
-  console.log("Crawl complete!");
+  console.log(`\n✅ Completed: ${sheetName}`);
+}
+
+async function main() {
+  const sheetConfigs = getSheetConfigs();
+
+  if (sheetConfigs.length === 0) {
+    throw new Error(
+      "No Google Sheets configured.\n" +
+        "Set GOOGLE_SHEETS_ID or GOOGLE_SHEETS_ID_<name> environment variables."
+    );
+  }
+
   console.log("=".repeat(60));
+  console.log("591 Rental Crawler with Google Sheets");
+  console.log("=".repeat(60));
+  console.log(
+    `\nFound ${sheetConfigs.length} sheet(s): ${sheetConfigs.map((c) => c.name).join(", ")}`
+  );
+
+  const results: { name: string; success: boolean; error?: string }[] = [];
+
+  for (const config of sheetConfigs) {
+    try {
+      await processSheet(config.name, config.id);
+      results.push({ name: config.name, success: true });
+    } catch (error) {
+      console.error(`\n❌ Failed: ${config.name} - ${error}`);
+      results.push({
+        name: config.name,
+        success: false,
+        error: String(error),
+      });
+    }
+  }
+
+  // Summary
+  console.log("\n" + "=".repeat(60));
+  console.log("Summary:");
+  for (const r of results) {
+    console.log(`  ${r.success ? "✅" : "❌"} ${r.name}`);
+  }
+  console.log("=".repeat(60));
+
+  // Throw if all sheets failed
+  const allFailed = results.every((r) => !r.success);
+  if (allFailed) {
+    throw new Error("All sheets failed to process");
+  }
 }
 
 main().catch(console.error);
