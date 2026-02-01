@@ -10,6 +10,10 @@ name: 591 Rental Crawler
 # │                                                                 │
 # │  Current: 06:00, 12:00, 16:00, 22:00 (UTC+8 Taiwan)             │
 # │  Cron format: 'minute hour * * *' (runs daily)                  │
+# │                                                                 │
+# │  Branch behavior:                                                │
+# │  - main: Scheduled runs (4x daily) + manual trigger             │
+# │  - develop: Manual trigger only (for testing)                   │
 # └─────────────────────────────────────────────────────────────────┘
 on:
   schedule:
@@ -19,11 +23,13 @@ on:
     - cron: '0 4 * * *'    # 12:00 UTC+8 → 04:00 UTC
     - cron: '0 8 * * *'    # 16:00 UTC+8 → 08:00 UTC
     - cron: '0 14 * * *'   # 22:00 UTC+8 → 14:00 UTC
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:  # Allow manual trigger on any branch
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
+    # Schedule runs only on main branch; manual dispatch works on any branch
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
 
     steps:
       - name: Checkout repository
