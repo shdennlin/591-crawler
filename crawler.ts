@@ -284,7 +284,8 @@ async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
     console.log("Run the crawler again after configuring the sheet.");
     console.log("=".repeat(60) + "\n");
     
-    process.exit(0);
+    // Throw error instead of process.exit() to allow other sheets to continue
+    throw new Error("No active URLs configured in Config sheet");
   }
 
   console.log(`📋 Loaded ${activeUrls.length} active URL(s) from Config sheet`);
