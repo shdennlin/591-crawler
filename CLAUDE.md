@@ -9,15 +9,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Install dependencies
-npm install
-npx playwright install chromium
+# Install dependencies (uses Bun for speed)
+bun install
+bunx playwright install chromium
 
 # Run crawler (requires env vars)
-npm run crawl
+bun run crawl
 
 # Local test (outputs JSON/CSV, no Google Sheets)
-npm run test
+bun run test
 ```
 
 **Environment Variables** (set in `.env` or export):

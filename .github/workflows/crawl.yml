@@ -29,16 +29,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: npm install
+        run: bun install
 
       - name: Install Playwright Chromium
-        run: npx playwright install chromium
+        run: bunx playwright install chromium
 
       # ─────────────────────────────────────────────────────────────────
       # MULTIPLE SHEETS SUPPORT
@@ -65,4 +63,4 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
           GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
-        run: npx tsx crawler.ts
+        run: bun run crawl

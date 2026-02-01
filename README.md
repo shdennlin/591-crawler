@@ -71,15 +71,20 @@ Each sheet has its own **Config** tab with separate URLs. The crawler processes 
 ## Local Development
 
 ```bash
-npm install
-npx playwright install chromium
+# Install Bun (if not installed)
+curl -fsSL https://bun.sh/install | bash
+
+# Install dependencies
+bun install
+bunx playwright install chromium
 
 # Set environment variables
 export GOOGLE_SHEETS_ID="your-sheet-id"
 export GOOGLE_SERVICE_ACCOUNT_EMAIL="...@...iam.gserviceaccount.com"
 export GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 
-npm run crawl
+# Run crawler
+bun run crawl
 ```
 
 ## URL Parameters
