@@ -126,31 +126,36 @@ interface NuxtListData {
 }
 
 async function extractListingsFromPage(page: Page): Promise<ListingItem[]> {
-  // Wait for the page to load completely (15s timeout — graceful degradation)
-  await page
-    .waitForLoadState('networkidle', { timeout: 15_000 })
-    .catch(() => {
-      console.log('  networkidle timeout, proceeding with available data...');
+  // __NUXT__ is server-rendered in HTML — try extracting immediately after domcontentloaded.
+  // Only fall back to networkidle wait if data isn't available yet.
+  const extractNuxt = () =>
+    page.evaluate(() => {
+      const nuxt = (window as any).__NUXT__;
+      if (!nuxt || !nuxt.data) return null;
+
+      for (const key of Object.keys(nuxt.data)) {
+        const entry = nuxt.data[key];
+        if (entry && entry.data && entry.data.items) {
+          return {
+            items: entry.data.items,
+            total: entry.data.total,
+            firstRow: entry.data.firstRow || 0
+          };
+        }
+      }
+      return null;
     });
 
-  // Extract data from window.__NUXT__
-  const nuxtData = await page.evaluate(() => {
-    const nuxt = (window as any).__NUXT__;
-    if (!nuxt || !nuxt.data) return null;
+  let nuxtData = await extractNuxt();
 
-    // Find the data key that contains items
-    for (const key of Object.keys(nuxt.data)) {
-      const entry = nuxt.data[key];
-      if (entry && entry.data && entry.data.items) {
-        return {
-          items: entry.data.items,
-          total: entry.data.total,
-          firstRow: entry.data.firstRow || 0
-        };
-      }
-    }
-    return null;
-  });
+  if (!nuxtData || !nuxtData.items) {
+    await page
+      .waitForLoadState('networkidle', { timeout: 15_000 })
+      .catch(() => {
+        console.log('  networkidle timeout, proceeding with available data...');
+      });
+    nuxtData = await extractNuxt();
+  }
 
   if (!nuxtData || !nuxtData.items) {
     const challenge = await detectChallengeContent(page);

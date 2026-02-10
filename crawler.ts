@@ -550,11 +550,15 @@ async function writeListingsToSheet(
     }
   }
 
-  // Collect rows to mark as inactive
-  for (const [id, { row, rowIndex }] of existingProperties) {
-    if (!seenIds.has(id) && row.get("Status") === "Active") {
-      rowsToInactivate.push(rowIndex);
-      inactive++;
+  // Collect rows to mark as inactive — only when we have crawl results.
+  // If seenIds is empty (crawl failed/timed out), skip to avoid falsely marking
+  // all existing listings as inactive.
+  if (seenIds.size > 0) {
+    for (const [id, { row, rowIndex }] of existingProperties) {
+      if (!seenIds.has(id) && row.get("Status") === "Active") {
+        rowsToInactivate.push(rowIndex);
+        inactive++;
+      }
     }
   }
 
@@ -682,27 +686,36 @@ async function extractListingsFromPage(
   page: Page,
   sourceUrl: string
 ): Promise<ListingItem[]> {
-  await page
-    .waitForLoadState("networkidle", { timeout: CONFIG.NETWORK_IDLE_TIMEOUT_MS })
-    .catch(() => {
-      console.log("  networkidle timeout, proceeding with available data...");
+  // __NUXT__ is server-rendered in HTML — try extracting immediately after domcontentloaded.
+  // Only fall back to networkidle wait if data isn't available yet.
+  const extractNuxt = () =>
+    page.evaluate(() => {
+      const nuxt = (window as any).__NUXT__;
+      if (!nuxt || !nuxt.data) return null;
+
+      for (const key of Object.keys(nuxt.data)) {
+        const entry = nuxt.data[key];
+        if (entry && entry.data && entry.data.items) {
+          return {
+            items: entry.data.items,
+            total: entry.data.total,
+          };
+        }
+      }
+      return null;
     });
 
-  const nuxtData = await page.evaluate(() => {
-    const nuxt = (window as any).__NUXT__;
-    if (!nuxt || !nuxt.data) return null;
+  let nuxtData = await extractNuxt();
 
-    for (const key of Object.keys(nuxt.data)) {
-      const entry = nuxt.data[key];
-      if (entry && entry.data && entry.data.items) {
-        return {
-          items: entry.data.items,
-          total: entry.data.total,
-        };
-      }
-    }
-    return null;
-  });
+  if (!nuxtData || !nuxtData.items) {
+    // Data not in initial HTML — wait for client-side hydration
+    await page
+      .waitForLoadState("networkidle", { timeout: CONFIG.NETWORK_IDLE_TIMEOUT_MS })
+      .catch(() => {
+        console.log("  networkidle timeout, proceeding with available data...");
+      });
+    nuxtData = await extractNuxt();
+  }
 
   if (!nuxtData || !nuxtData.items) {
     const challenge = await detectChallengeContent(page);
