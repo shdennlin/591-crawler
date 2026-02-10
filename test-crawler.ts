@@ -9,10 +9,96 @@
  * Run with: npx tsx test-crawler.ts
  */
 
-import { chromium, Browser, Page } from 'playwright';
+import { chromium, Browser, Page, BrowserContext, Response } from 'playwright';
 import * as fs from 'fs';
 
 const TEST_URL = 'https://rent.591.com.tw/list?region=3&kind=3';
+
+// ============================================================
+// STEALTH & CHALLENGE DETECTION
+// ============================================================
+async function createStealthContext(browser: Browser): Promise<BrowserContext> {
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    locale: 'zh-TW',
+    timezoneId: 'Asia/Taipei',
+    extraHTTPHeaders: {
+      'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+      Accept:
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Upgrade-Insecure-Requests': '1',
+    },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+  });
+
+  return context;
+}
+
+async function detectChallengePage(
+  response: Response | null,
+  page: Page,
+  url: string
+): Promise<{ blocked: boolean; reason: string }> {
+  if (!response) {
+    return { blocked: true, reason: 'No response received' };
+  }
+  const status = response.status();
+  if (status === 403) {
+    return { blocked: true, reason: 'HTTP 403 Forbidden (anti-bot)' };
+  }
+  if (status === 429) {
+    return { blocked: true, reason: 'HTTP 429 Too Many Requests (rate limited)' };
+  }
+
+  const finalUrl = response.url();
+  if (finalUrl !== url && !finalUrl.startsWith('https://rent.591.com.tw/')) {
+    return { blocked: true, reason: `Redirected to ${finalUrl}` };
+  }
+
+  return { blocked: false, reason: '' };
+}
+
+async function detectChallengeContent(
+  page: Page
+): Promise<{ blocked: boolean; reason: string }> {
+  const title = await page.title().catch(() => '');
+  const challengeTitles = [
+    /just a moment/i,
+    /checking your browser/i,
+    /cloudflare/i,
+    /attention required/i,
+    /please wait/i,
+  ];
+  for (const pattern of challengeTitles) {
+    if (pattern.test(title)) {
+      return { blocked: true, reason: `Challenge page: "${title}"` };
+    }
+  }
+
+  const bodyText = await page
+    .evaluate(() => document.body?.innerText?.slice(0, 2000) || '')
+    .catch(() => '');
+  const challengePatterns = [
+    /cloudflare/i,
+    /ray id/i,
+    /captcha/i,
+    /human verification/i,
+    /enable javascript and cookies/i,
+  ];
+  for (const pattern of challengePatterns) {
+    if (pattern.test(bodyText)) {
+      return { blocked: true, reason: 'Anti-bot content detected on page' };
+    }
+  }
+
+  return { blocked: false, reason: '' };
+}
 
 interface ListingItem {
   id: string;
@@ -67,7 +153,12 @@ async function extractListingsFromPage(page: Page): Promise<ListingItem[]> {
   });
 
   if (!nuxtData || !nuxtData.items) {
-    console.log('Could not extract __NUXT__ data');
+    const challenge = await detectChallengeContent(page);
+    if (challenge.blocked) {
+      console.log(`  ⚠️ ${challenge.reason}`);
+    } else {
+      console.log('  ⚠️ Could not extract __NUXT__ data (page may have changed structure)');
+    }
     return [];
   }
 
@@ -109,17 +200,23 @@ async function extractListingsFromPage(page: Page): Promise<ListingItem[]> {
   return listings;
 }
 
-async function crawlPage(browser: Browser, url: string, pageNum: number): Promise<ListingItem[]> {
+async function crawlPage(context: BrowserContext, url: string, pageNum: number): Promise<ListingItem[]> {
   const fullUrl = pageNum === 1 ? url : `${url}&page=${pageNum}`;
   console.log(`\nFetching page ${pageNum}: ${fullUrl}`);
 
-  const page = await browser.newPage();
+  const page = await context.newPage();
 
   try {
-    await page.goto(fullUrl, {
+    const response = await page.goto(fullUrl, {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
+
+    const challenge = await detectChallengePage(response, page, fullUrl);
+    if (challenge.blocked) {
+      console.log(`  ⚠️ Blocked: ${challenge.reason}`);
+      return [];
+    }
 
     // Wait for listings to appear
     await page.waitForSelector('.item-info-title, .item-title', { timeout: 10000 }).catch(() => {});
@@ -127,7 +224,10 @@ async function crawlPage(browser: Browser, url: string, pageNum: number): Promis
     const listings = await extractListingsFromPage(page);
     return listings;
   } finally {
-    await page.close();
+    await Promise.race([
+      page.close(),
+      new Promise<void>((r) => setTimeout(r, 5000)),
+    ]).catch(() => {});
   }
 }
 
@@ -139,22 +239,33 @@ async function main() {
   console.log('\nLaunching browser...');
   const browser = await chromium.launch({
     headless: true,
+    args: ['--disable-blink-features=AutomationControlled'],
   });
+  const context = await createStealthContext(browser);
 
   try {
     const allListings: ListingItem[] = [];
     const maxPages = 3; // Test with first 3 pages
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-      const listings = await crawlPage(browser, TEST_URL, pageNum);
+      try {
+        const listings = await crawlPage(context, TEST_URL, pageNum);
 
-      if (listings.length === 0) {
-        console.log('No more listings found, stopping');
-        break;
+        if (listings.length === 0) {
+          console.log('No more listings found, stopping');
+          break;
+        }
+
+        allListings.push(...listings);
+        console.log(`Page ${pageNum}: ${listings.length} listings (total: ${allListings.length})`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(`  ⚠️ Page ${pageNum} error: ${message}`);
+        if (message.includes('Timeout') || message.includes('timed out')) {
+          console.log('  Skipping remaining pages.');
+          break;
+        }
       }
-
-      allListings.push(...listings);
-      console.log(`Page ${pageNum}: ${listings.length} listings (total: ${allListings.length})`);
 
       // Small delay between pages
       if (pageNum < maxPages) {
@@ -197,7 +308,14 @@ async function main() {
     }
 
   } finally {
-    await browser.close();
+    await Promise.race([
+      context.close(),
+      new Promise<void>((r) => setTimeout(r, 5_000)),
+    ]).catch(() => {});
+    await Promise.race([
+      browser.close(),
+      new Promise<void>((r) => setTimeout(r, 10_000)),
+    ]).catch(() => {});
   }
 
   console.log('\n' + '='.repeat(60));

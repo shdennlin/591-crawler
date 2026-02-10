@@ -17,7 +17,7 @@
  */
 
 import "dotenv/config";
-import { chromium, Browser, Page } from "playwright";
+import { chromium, Browser, Page, BrowserContext, Response } from "playwright";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
 
@@ -94,6 +94,92 @@ function getSheetConfigs(): { name: string; id: string }[] {
   }
 
   return configs;
+}
+
+// ============================================================
+// STEALTH & CHALLENGE DETECTION
+// ============================================================
+async function createStealthContext(browser: Browser): Promise<BrowserContext> {
+  const context = await browser.newContext({
+    viewport: { width: 1920, height: 1080 },
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    locale: "zh-TW",
+    timezoneId: "Asia/Taipei",
+    extraHTTPHeaders: {
+      "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Upgrade-Insecure-Requests": "1",
+    },
+  });
+
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+  });
+
+  return context;
+}
+
+async function detectChallengePage(
+  response: Response | null,
+  page: Page,
+  url: string
+): Promise<{ blocked: boolean; reason: string }> {
+  if (!response) {
+    return { blocked: true, reason: "No response received" };
+  }
+  const status = response.status();
+  if (status === 403) {
+    return { blocked: true, reason: "HTTP 403 Forbidden (anti-bot)" };
+  }
+  if (status === 429) {
+    return { blocked: true, reason: "HTTP 429 Too Many Requests (rate limited)" };
+  }
+
+  const finalUrl = response.url();
+  if (finalUrl !== url && !finalUrl.startsWith("https://rent.591.com.tw/")) {
+    return { blocked: true, reason: `Redirected to ${finalUrl}` };
+  }
+
+  return { blocked: false, reason: "" };
+}
+
+async function detectChallengeContent(
+  page: Page
+): Promise<{ blocked: boolean; reason: string }> {
+  const title = await page.title().catch(() => "");
+  const challengeTitles = [
+    /just a moment/i,
+    /checking your browser/i,
+    /cloudflare/i,
+    /attention required/i,
+    /please wait/i,
+  ];
+  for (const pattern of challengeTitles) {
+    if (pattern.test(title)) {
+      return { blocked: true, reason: `Challenge page: "${title}"` };
+    }
+  }
+
+  const bodyText = await page
+    .evaluate(() => document.body?.innerText?.slice(0, 2000) || "")
+    .catch(() => "");
+  const challengePatterns = [
+    /cloudflare/i,
+    /ray id/i,
+    /captcha/i,
+    /human verification/i,
+    /enable javascript and cookies/i,
+  ];
+  for (const pattern of challengePatterns) {
+    if (pattern.test(bodyText)) {
+      return { blocked: true, reason: "Anti-bot content detected on page" };
+    }
+  }
+
+  return { blocked: false, reason: "" };
 }
 
 // ============================================================
@@ -619,7 +705,12 @@ async function extractListingsFromPage(
   });
 
   if (!nuxtData || !nuxtData.items) {
-    console.log("Could not extract __NUXT__ data");
+    const challenge = await detectChallengeContent(page);
+    if (challenge.blocked) {
+      console.log(`  ⚠️ ${challenge.reason}`);
+    } else {
+      console.log("  ⚠️ Could not extract __NUXT__ data (page may have changed structure)");
+    }
     return [];
   }
 
@@ -662,7 +753,7 @@ async function extractListingsFromPage(
 }
 
 async function crawlUrl(
-  browser: Browser,
+  context: BrowserContext,
   baseUrl: string
 ): Promise<ListingItem[]> {
   const allListings: ListingItem[] = [];
@@ -689,14 +780,21 @@ async function crawlUrl(
         await new Promise((r) => setTimeout(r, delay));
       }
 
-      const page = await browser.newPage();
+      const page = await context.newPage();
       try {
         const listings = await Promise.race([
           (async () => {
-            await page.goto(url, {
+            const response = await page.goto(url, {
               waitUntil: "domcontentloaded",
               timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
             });
+
+            const challenge = await detectChallengePage(response, page, url);
+            if (challenge.blocked) {
+              console.log(`  ⚠️ Blocked: ${challenge.reason}`);
+              return [] as ListingItem[];
+            }
+
             await page
               .waitForSelector(".item-info-title, .item-title", {
                 timeout: CONFIG.PAGE_SELECTOR_TIMEOUT_MS,
@@ -790,9 +888,13 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
   const existingProperties = await getExistingProperties(sheet);
   console.log(`Found ${existingProperties.size} existing properties in sheet`);
 
-  // Launch browser
+  // Launch browser with stealth
   console.log("\n🌐 Launching browser...");
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--disable-blink-features=AutomationControlled"],
+  });
+  const context = await createStealthContext(browser);
 
   try {
     const allListings: ListingItem[] = [];
@@ -805,7 +907,7 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
         await new Promise((r) => setTimeout(r, delay));
       }
       console.log(`\n📍 Crawling: ${urls[i]}`);
-      const listings = await crawlUrl(browser, urls[i]);
+      const listings = await crawlUrl(context, urls[i]);
       allListings.push(...listings);
     }
 
@@ -828,7 +930,14 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
       `✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}, Inactive: ${inactive}`
     );
   } finally {
-    await browser.close();
+    await Promise.race([
+      context.close(),
+      new Promise<void>((r) => setTimeout(r, 5_000)),
+    ]).catch(() => {});
+    await Promise.race([
+      browser.close(),
+      new Promise<void>((r) => setTimeout(r, 10_000)),
+    ]).catch(() => {});
   }
 
   console.log(`\n✅ Completed: ${sheetName}`);
@@ -882,4 +991,9 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
