@@ -719,9 +719,18 @@ async function crawlUrl(
         await new Promise((r) => setTimeout(r, delay));
       }
     } catch (error) {
-      console.log(`  ⚠️ ${error}, skipping to next page...`);
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`  ⚠️ Error: ${message}`);
+      if (message.includes("timed out")) {
+        console.log(`  Skipping remaining pages for this URL.`);
+        break;
+      }
     } finally {
-      await page.close();
+      // Force-close with timeout to prevent hanging on stuck pages
+      await Promise.race([
+        page.close(),
+        new Promise<void>((r) => setTimeout(r, 5000)),
+      ]).catch(() => {});
     }
   }
 
