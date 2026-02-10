@@ -40,8 +40,12 @@ interface NuxtListData {
 }
 
 async function extractListingsFromPage(page: Page): Promise<ListingItem[]> {
-  // Wait for the page to load completely
-  await page.waitForLoadState('networkidle');
+  // Wait for the page to load completely (15s timeout — graceful degradation)
+  await page
+    .waitForLoadState('networkidle', { timeout: 15_000 })
+    .catch(() => {
+      console.log('  networkidle timeout, proceeding with available data...');
+    });
 
   // Extract data from window.__NUXT__
   const nuxtData = await page.evaluate(() => {

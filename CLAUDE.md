@@ -65,12 +65,29 @@ Parse Listings → Deduplicate by Property ID → Write to Data Sheet
 
 ```typescript
 const CONFIG = {
-  MAX_PAGES_PER_URL: 10,    // Max pages per URL (30 items/page)
-  MAX_ITEMS_PER_URL: 30,    // Max items to fetch
-  REQUEST_DELAY_MS: 2000,   // Base delay + 0-4000ms random
+  MAX_PAGES_PER_URL: 10,         // Max pages per URL (30 items/page)
+  MAX_ITEMS_PER_URL: 30,         // Max items to fetch
+  REQUEST_DELAY_MS: 2000,        // Base delay + 0-4000ms random
+  PAGE_GOTO_TIMEOUT_MS: 30_000,  // page.goto timeout
+  PAGE_SELECTOR_TIMEOUT_MS: 10_000, // waitForSelector timeout
+  NETWORK_IDLE_TIMEOUT_MS: 15_000,  // networkidle graceful timeout
+  PAGE_CRAWL_TIMEOUT_MS: 60_000,    // per-page overall safety net
+  SHEET_OPERATION_TIMEOUT_MS: 30_000, // per Sheets API call timeout
+  SHEET_RETRY_COUNT: 3,          // max retries for Sheets operations
+  SHEET_RETRY_DELAY_MS: 2_000,   // base delay between retries
   SHEET_DATA: "Data",
   SHEET_CONFIG: "Config",
 };
+```
+
+### Timeout Layering (defense in depth)
+
+```
+Layer 1: networkidle wait       15s  (graceful degradation — proceeds on timeout)
+Layer 2: page.goto              30s  (Playwright navigation timeout)
+Layer 3: per-page crawl         60s  (safety net — skips page on timeout)
+Layer 4: Sheets API per-call    30s  (with 3x retry + linear backoff)
+Layer 5: GitHub Actions job      6m  (outermost safety net)
 ```
 
 ## GitHub Actions

@@ -30,10 +30,51 @@ const CONFIG = {
   MAX_ITEMS_PER_URL: 30, // Max items to fetch per URL (0 = unlimited)
   REQUEST_DELAY_MS: 2000, // Base delay + 0~4000ms random (2~6 seconds)
 
+  // Timeout settings (ms)
+  PAGE_GOTO_TIMEOUT_MS: 30_000, // page.goto timeout
+  PAGE_SELECTOR_TIMEOUT_MS: 10_000, // waitForSelector timeout
+  NETWORK_IDLE_TIMEOUT_MS: 15_000, // networkidle wait — graceful degradation
+  PAGE_CRAWL_TIMEOUT_MS: 60_000, // per-page overall safety net
+  SHEET_OPERATION_TIMEOUT_MS: 30_000, // per Sheets API call timeout
+  SHEET_RETRY_COUNT: 3, // max retries for Sheets operations
+  SHEET_RETRY_DELAY_MS: 2_000, // base delay between retries (linear backoff)
+
   // Sheet names
   SHEET_DATA: "Data",
   SHEET_CONFIG: "Config",
 };
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  options: { maxRetries?: number; timeoutMs?: number; retryDelayMs?: number } = {}
+): Promise<T> {
+  const maxRetries = options.maxRetries ?? CONFIG.SHEET_RETRY_COUNT;
+  const timeoutMs = options.timeoutMs ?? CONFIG.SHEET_OPERATION_TIMEOUT_MS;
+  const retryDelayMs = options.retryDelayMs ?? CONFIG.SHEET_RETRY_DELAY_MS;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await Promise.race([
+        fn(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms`)), timeoutMs)
+        ),
+      ]);
+      return result;
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries;
+      if (isLastAttempt) {
+        console.error(`  ❌ ${label} failed after ${maxRetries} attempt(s): ${error}`);
+        throw error;
+      }
+      const delay = retryDelayMs * attempt;
+      console.log(`  ⚠️ ${label} attempt ${attempt} failed, retrying in ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw new Error("Unreachable");
+}
 
 
 /**
@@ -119,7 +160,7 @@ async function connectToGoogleSheets(sheetId: string): Promise<GoogleSpreadsheet
   });
 
   const doc = new GoogleSpreadsheet(sheetId, auth);
-  await doc.loadInfo();
+  await withRetry(() => doc.loadInfo(), "loadInfo");
   console.log(`Connected to: ${doc.title}`);
 
   return doc;
@@ -163,12 +204,16 @@ async function ensureDataSheet(doc: GoogleSpreadsheet) {
 async function formatConfigSheet(sheet: any) {
   // Load cells for columns A-F (data columns + helper columns)
   // Rows: header (0), example (1), instructions (2-6)
-  await sheet.loadCells({
-    startRowIndex: 0,
-    endRowIndex: 7,
-    startColumnIndex: 0,
-    endColumnIndex: 6,
-  });
+  await withRetry(
+    () =>
+      sheet.loadCells({
+        startRowIndex: 0,
+        endRowIndex: 7,
+        startColumnIndex: 0,
+        endColumnIndex: 6,
+      }),
+    "loadCells (formatConfig)"
+  );
 
   // === Column A-C: Data columns ===
   const headerNotes = [
@@ -239,7 +284,7 @@ async function formatConfigSheet(sheet: any) {
     }
   }
 
-  await sheet.saveUpdatedCells();
+  await withRetry(() => sheet.saveUpdatedCells(), "saveUpdatedCells (formatConfig)");
   console.log("  ✨ Config sheet formatted with colors, notes, and instructions");
 }
 
@@ -258,7 +303,7 @@ async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
   }
 
   // Read active URLs from sheet
-  const rows = await sheet.getRows();
+  const rows = await withRetry<any[]>(() => sheet.getRows(), "getRows (config)");
   const activeUrls: string[] = [];
 
   for (const row of rows) {
@@ -295,7 +340,7 @@ async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
 async function getExistingProperties(
   sheet: any
 ): Promise<Map<string, { row: any; rowIndex: number }>> {
-  const rows = await sheet.getRows();
+  const rows = await withRetry<any[]>(() => sheet.getRows(), "getRows (data)");
   const map = new Map<string, { row: any; rowIndex: number }>();
 
   for (let i = 0; i < rows.length; i++) {
@@ -431,18 +476,28 @@ async function writeListingsToSheet(
     console.log(`  Inserting ${newRows.length} new rows at top...`);
     try {
       // Insert blank rows at position 1 (after header)
-      await sheet.insertDimension(
-        "ROWS",
-        { startIndex: 1, endIndex: 1 + newRows.length },
-        false
+      // insertDimension is NOT idempotent — timeout only, no retry
+      await withRetry(
+        () =>
+          sheet.insertDimension(
+            "ROWS",
+            { startIndex: 1, endIndex: 1 + newRows.length },
+            false
+          ),
+        "insertDimension",
+        { maxRetries: 1 }
       );
       // Load cells and set values (columns A-T, 20 columns total)
-      await sheet.loadCells({
-        startRowIndex: 1,
-        endRowIndex: 1 + newRows.length,
-        startColumnIndex: 0,
-        endColumnIndex: 20, // Column T: Status (index 19)
-      });
+      await withRetry(
+        () =>
+          sheet.loadCells({
+            startRowIndex: 1,
+            endRowIndex: 1 + newRows.length,
+            startColumnIndex: 0,
+            endColumnIndex: 20, // Column T: Status (index 19)
+          }),
+        "loadCells (newRows)"
+      );
       for (let i = 0; i < newRows.length; i++) {
         const rowData = newRows[i];
         for (let j = 0; j < rowData.length; j++) {
@@ -454,7 +509,7 @@ async function writeListingsToSheet(
           }
         }
       }
-      await sheet.saveUpdatedCells();
+      await withRetry(() => sheet.saveUpdatedCells(), "saveUpdatedCells (newRows)");
 
       // After inserting new rows, existing row indices shift down
       // Adjust rowsToUpdate and rowsToInactivate indices
@@ -490,12 +545,16 @@ async function writeListingsToSheet(
 
       // Load all cells that need updating (columns E-T, indices 4-19)
       // Skip A-C (user columns) and D (Property ID - never changes)
-      await sheet.loadCells({
-        startRowIndex: minRow,
-        endRowIndex: maxRow + 1,
-        startColumnIndex: 4, // Column E: Title (skip A-D)
-        endColumnIndex: 20, // Column T: Status (index 19)
-      });
+      await withRetry(
+        () =>
+          sheet.loadCells({
+            startRowIndex: minRow,
+            endRowIndex: maxRow + 1,
+            startColumnIndex: 4, // Column E: Title (skip A-D)
+            endColumnIndex: 20, // Column T: Status (index 19)
+          }),
+        "loadCells (batchUpdate)"
+      );
 
       // Apply updates (data array maps to columns E-T, indices 4-19)
       for (const { rowIndex, data } of rowsToUpdate) {
@@ -519,7 +578,7 @@ async function writeListingsToSheet(
       }
 
       // Single batch save for all updates
-      await sheet.saveUpdatedCells();
+      await withRetry(() => sheet.saveUpdatedCells(), "saveUpdatedCells (batchUpdate)");
     } catch (error) {
       console.error(`  ❌ Error in batch update:`, error);
       throw error;
@@ -536,7 +595,11 @@ async function extractListingsFromPage(
   page: Page,
   sourceUrl: string
 ): Promise<ListingItem[]> {
-  await page.waitForLoadState("networkidle");
+  await page
+    .waitForLoadState("networkidle", { timeout: CONFIG.NETWORK_IDLE_TIMEOUT_MS })
+    .catch(() => {
+      console.log("  networkidle timeout, proceeding with available data...");
+    });
 
   const nuxtData = await page.evaluate(() => {
     const nuxt = (window as any).__NUXT__;
@@ -616,12 +679,27 @@ async function crawlUrl(
 
     const page = await browser.newPage();
     try {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await page
-        .waitForSelector(".item-info-title, .item-title", { timeout: 10000 })
-        .catch(() => {});
+      const listings = await Promise.race([
+        (async () => {
+          await page.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
+          });
+          await page
+            .waitForSelector(".item-info-title, .item-title", {
+              timeout: CONFIG.PAGE_SELECTOR_TIMEOUT_MS,
+            })
+            .catch(() => {});
 
-      const listings = await extractListingsFromPage(page, baseUrl);
+          return await extractListingsFromPage(page, baseUrl);
+        })(),
+        new Promise<ListingItem[]>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`Page ${pageNum} timed out after ${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms`)),
+            CONFIG.PAGE_CRAWL_TIMEOUT_MS
+          )
+        ),
+      ]);
 
       if (listings.length === 0) {
         console.log("  No more listings, stopping.");
@@ -640,6 +718,8 @@ async function crawlUrl(
         console.log(`  Waiting ${delay}ms...`);
         await new Promise((r) => setTimeout(r, delay));
       }
+    } catch (error) {
+      console.log(`  ⚠️ ${error}, skipping to next page...`);
     } finally {
       await page.close();
     }

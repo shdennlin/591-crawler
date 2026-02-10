@@ -28,6 +28,7 @@ on:
 jobs:
   crawl:
     runs-on: ubuntu-latest
+    timeout-minutes: 6
     # Schedule runs only on main branch; manual dispatch works on any branch
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
 
