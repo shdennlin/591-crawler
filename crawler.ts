@@ -764,9 +764,14 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
     const allListings: ListingItem[] = [];
 
     // Crawl each URL from Config sheet
-    for (const url of urls) {
-      console.log(`\n📍 Crawling: ${url}`);
-      const listings = await crawlUrl(browser, url);
+    for (let i = 0; i < urls.length; i++) {
+      if (i > 0) {
+        const delay = CONFIG.REQUEST_DELAY_MS + Math.floor(Math.random() * 4000);
+        console.log(`\n⏳ Waiting ${delay}ms before next URL...`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+      console.log(`\n📍 Crawling: ${urls[i]}`);
+      const listings = await crawlUrl(browser, urls[i]);
       allListings.push(...listings);
     }
 
