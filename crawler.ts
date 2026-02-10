@@ -35,6 +35,7 @@ const CONFIG = {
   PAGE_SELECTOR_TIMEOUT_MS: 10_000, // waitForSelector timeout
   NETWORK_IDLE_TIMEOUT_MS: 15_000, // networkidle wait — graceful degradation
   PAGE_CRAWL_TIMEOUT_MS: 60_000, // per-page overall safety net
+  PAGE_RETRY_COUNT: 3, // max retries for non-timeout page errors
   SHEET_OPERATION_TIMEOUT_MS: 30_000, // per Sheets API call timeout
   SHEET_RETRY_COUNT: 3, // max retries for Sheets operations
   SHEET_RETRY_DELAY_MS: 2_000, // base delay between retries (linear backoff)
@@ -677,60 +678,84 @@ async function crawlUrl(
     const url = pageNum === 1 ? baseUrl : `${baseUrl}&page=${pageNum}`;
     console.log(`  Page ${pageNum}: ${url}`);
 
-    const page = await browser.newPage();
-    try {
-      const listings = await Promise.race([
-        (async () => {
-          await page.goto(url, {
-            waitUntil: "domcontentloaded",
-            timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
-          });
-          await page
-            .waitForSelector(".item-info-title, .item-title", {
-              timeout: CONFIG.PAGE_SELECTOR_TIMEOUT_MS,
-            })
-            .catch(() => {});
-
-          return await extractListingsFromPage(page, baseUrl);
-        })(),
-        new Promise<ListingItem[]>((_, reject) =>
-          setTimeout(
-            () => reject(new Error(`Page ${pageNum} timed out after ${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms`)),
-            CONFIG.PAGE_CRAWL_TIMEOUT_MS
-          )
-        ),
-      ]);
-
-      if (listings.length === 0) {
-        console.log("  No more listings, stopping.");
-        break;
-      }
-
-      allListings.push(...listings);
-      console.log(
-        `  Found ${listings.length} listings (total: ${allListings.length})`
-      );
-
-      if (pageNum < CONFIG.MAX_PAGES_PER_URL) {
-        // Random delay: base + 0ms to base + 4000ms
+    let succeeded = false;
+    for (let attempt = 1; attempt <= CONFIG.PAGE_RETRY_COUNT; attempt++) {
+      if (attempt > 1) {
         const delay =
           CONFIG.REQUEST_DELAY_MS + Math.floor(Math.random() * 4000);
-        console.log(`  Waiting ${delay}ms...`);
+        console.log(
+          `  🔄 Retry ${attempt}/${CONFIG.PAGE_RETRY_COUNT} after ${delay}ms...`
+        );
         await new Promise((r) => setTimeout(r, delay));
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.log(`  ⚠️ Error: ${message}`);
-      if (message.includes("timed out")) {
-        console.log(`  Skipping remaining pages for this URL.`);
+
+      const page = await browser.newPage();
+      try {
+        const listings = await Promise.race([
+          (async () => {
+            await page.goto(url, {
+              waitUntil: "domcontentloaded",
+              timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
+            });
+            await page
+              .waitForSelector(".item-info-title, .item-title", {
+                timeout: CONFIG.PAGE_SELECTOR_TIMEOUT_MS,
+              })
+              .catch(() => {});
+
+            return await extractListingsFromPage(page, baseUrl);
+          })(),
+          new Promise<ListingItem[]>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `Page ${pageNum} timed out after ${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms`
+                  )
+                ),
+              CONFIG.PAGE_CRAWL_TIMEOUT_MS
+            )
+          ),
+        ]);
+
+        if (listings.length === 0) {
+          console.log("  No more listings, stopping.");
+          return allListings;
+        }
+
+        allListings.push(...listings);
+        console.log(
+          `  Found ${listings.length} listings (total: ${allListings.length})`
+        );
+        succeeded = true;
         break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.log(`  ⚠️ Error: ${message}`);
+        if (message.includes("timed out")) {
+          console.log(`  Skipping remaining pages for this URL.`);
+          return allListings;
+        }
+        if (attempt === CONFIG.PAGE_RETRY_COUNT) {
+          console.log(
+            `  ❌ Failed after ${CONFIG.PAGE_RETRY_COUNT} attempts, skipping page.`
+          );
+        }
+      } finally {
+        // Force-close with timeout to prevent hanging on stuck pages
+        await Promise.race([
+          page.close(),
+          new Promise<void>((r) => setTimeout(r, 5000)),
+        ]).catch(() => {});
       }
-    } finally {
-      // Force-close with timeout to prevent hanging on stuck pages
-      await Promise.race([
-        page.close(),
-        new Promise<void>((r) => setTimeout(r, 5000)),
-      ]).catch(() => {});
+    }
+
+    // Between-page delay (only after successful crawl)
+    if (succeeded && pageNum < CONFIG.MAX_PAGES_PER_URL) {
+      const delay =
+        CONFIG.REQUEST_DELAY_MS + Math.floor(Math.random() * 4000);
+      console.log(`  Waiting ${delay}ms...`);
+      await new Promise((r) => setTimeout(r, delay));
     }
   }
 

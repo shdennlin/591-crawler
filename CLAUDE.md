@@ -72,6 +72,7 @@ const CONFIG = {
   PAGE_SELECTOR_TIMEOUT_MS: 10_000, // waitForSelector timeout
   NETWORK_IDLE_TIMEOUT_MS: 15_000,  // networkidle graceful timeout
   PAGE_CRAWL_TIMEOUT_MS: 60_000,    // per-page overall safety net
+  PAGE_RETRY_COUNT: 3,             // max retries for non-timeout page errors
   SHEET_OPERATION_TIMEOUT_MS: 30_000, // per Sheets API call timeout
   SHEET_RETRY_COUNT: 3,          // max retries for Sheets operations
   SHEET_RETRY_DELAY_MS: 2_000,   // base delay between retries
