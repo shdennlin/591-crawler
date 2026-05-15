@@ -1,0 +1,31 @@
+name: Self-hosted runner smoke test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, pve-homelab]
+    timeout-minutes: 2
+    steps:
+      - name: Show runner identity
+        run: |
+          echo "--- Runner identity ---"
+          echo "hostname: $(hostname)"
+          echo "user:     $(whoami)"
+          echo "pwd:      $(pwd)"
+          echo "labels:   $RUNNER_NAME / $RUNNER_OS / $RUNNER_ARCH"
+          echo
+          echo "--- Network identity ---"
+          echo "internal IP:"
+          ip -4 addr show eth0 | grep inet || echo "no eth0"
+          echo
+          echo "public IP (what 591 will see):"
+          curl -fsS --max-time 5 https://api.ipify.org || echo "ipify timeout"
+          echo
+          echo "--- System info ---"
+          uname -a
+          cat /etc/os-release | head -5
+          echo
+          echo "--- Ephemeral check ---"
+          cat .runner 2>/dev/null || echo "(no .runner - already deregistered?)"
