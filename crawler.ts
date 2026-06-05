@@ -964,9 +964,17 @@ async function fetchPublishTimes(
   const publishMap = new Map<string, string>();
   if (capped.length === 0) return publishMap;
 
+  // capped lists new IDs first (up to budget), then backfill. When new listings
+  // exceed the budget, the surplus is deferred to a later run — count what's
+  // actually in this batch so the breakdown never goes negative.
+  const newInBatch = Math.min(newIds.length, capped.length);
+  const backfillInBatch = capped.length - newInBatch;
+  const deferredNew = newIds.length - newInBatch;
+
   console.log(
     `\n🕑 Fetching publish time for ${capped.length} listing(s) ` +
-      `(${newIds.length} new, ${capped.length - newIds.length} backfill)...`
+      `(${newInBatch} new, ${backfillInBatch} backfill` +
+      `${deferredNew > 0 ? `, ${deferredNew} new deferred to next run` : ""})...`
   );
 
   for (let i = 0; i < capped.length; i++) {
