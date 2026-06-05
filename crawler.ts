@@ -20,6 +20,12 @@ import "dotenv/config";
 import { chromium, Browser, Page, BrowserContext, Response } from "playwright";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
+import {
+  unixToTaipei,
+  refreshToAbsolute,
+  shouldUpdateRefresh,
+} from "./time-utils";
+import { selectPublishTargets } from "./publish-targets";
 
 // ============================================================
 // CONFIGURATION - Edit these values
@@ -40,10 +46,56 @@ const CONFIG = {
   SHEET_RETRY_COUNT: 3, // max retries for Sheets operations
   SHEET_RETRY_DELAY_MS: 2_000, // base delay between retries (linear backoff)
 
+  // Publish/update time settings
+  // Detail pages are the only source of absolute publish time (favData.posttime).
+  // Cap detail-page visits per run so the job stays within the GitHub Actions
+  // time budget; new listings are prioritised, leftover budget backfills old rows.
+  MAX_DETAIL_FETCHES_PER_RUN: 25,
+  // "更新時間" is derived from a coarse relative string and recomputed each run,
+  // so it drifts a few hours. Only treat a newer value as a *real* refresh when
+  // it jumps ahead by more than this (must exceed the max crawl-schedule gap).
+  REFRESH_UPDATE_THRESHOLD_MS: 12 * 60 * 60 * 1000,
+
   // Sheet names
   SHEET_DATA: "Data",
   SHEET_CONFIG: "Config",
 };
+
+// ============================================================
+// DATA SHEET COLUMN LAYOUT
+// ============================================================
+// Single source of truth for column order. Adding a column here keeps every
+// index-based read/write below in sync — do NOT hardcode column numbers.
+// User columns (★) are A-C and always preserved; crawler manages D onward.
+const COLUMNS = [
+  "★ Mark", // A
+  "★ Rating", // B
+  "★ Remarks", // C
+  "Property ID", // D
+  "Title", // E
+  "Price", // F
+  "Property Type", // G
+  "Size (坪)", // H
+  "Floor", // I
+  "Location", // J
+  "Metro Distance", // K
+  "Tags", // L
+  "Agent Type", // M
+  "Agent Name", // N
+  "發佈時間", // O - absolute publish time (UTC+8), from detail page
+  "更新時間", // P - absolute update time (UTC+8), derived from refresh string
+  "Views", // Q
+  "Source URL", // R
+  "First Seen", // S
+  "Last Updated", // T
+  "Status", // U
+] as const;
+
+const COL: Record<string, number> = Object.fromEntries(
+  COLUMNS.map((header, index) => [header, index])
+);
+const COL_COUNT = COLUMNS.length;
+const FIRST_CRAWLER_COL = COL["Title"]; // E — first column the crawler overwrites
 
 async function withRetry<T>(
   fn: () => Promise<T>,
@@ -199,7 +251,8 @@ interface ListingItem {
   tags: string[];
   agentType: string;
   agentName: string;
-  updateInfo: string;
+  updateInfo: string; // raw 591 relative refresh string ("2天前更新")
+  publishTime: string; // absolute publish time (UTC+8), "" if not fetched yet
   views: number;
   url: string;
   sourceUrl: string;
@@ -217,7 +270,8 @@ interface SheetRow {
   Tags: string;
   "Agent Type": string;
   "Agent Name": string;
-  "Update Info": string;
+  發佈時間: string; // absolute publish time (UTC+8)
+  更新時間: string; // absolute update time (UTC+8)
   Views: number;
   "Source URL": string;
   "First Seen": string;
@@ -260,32 +314,67 @@ async function ensureDataSheet(doc: GoogleSpreadsheet) {
     console.log(`Creating "${CONFIG.SHEET_DATA}" sheet...`);
     sheet = await doc.addSheet({
       title: CONFIG.SHEET_DATA,
-      headerValues: [
-        "★ Mark",
-        "★ Rating",
-        "★ Remarks",
-        "Property ID",
-        "Title", // Hyperlink to property URL
-        "Price", // Numeric value with display format "#,##0元/月"
-        "Property Type",
-        "Size (坪)",
-        "Floor",
-        "Location",
-        "Metro Distance",
-        "Tags",
-        "Agent Type",
-        "Agent Name",
-        "Update Info",
-        "Views",
-        "Source URL",
-        "First Seen",
-        "Last Updated",
-        "Status",
-      ],
+      headerValues: [...COLUMNS],
     });
   }
 
   return sheet;
+}
+
+/**
+ * Migrate an existing Data sheet to the current column layout.
+ *
+ * State-based and idempotent (no version flag): if "發佈時間" is already present
+ * the sheet is current and we no-op. Otherwise we insert the "發佈時間" column
+ * before the old "Update Info" column and rename "Update Info" → "更新時間".
+ * insertDimension shifts all existing cell data right automatically, so user
+ * columns and prior data stay aligned.
+ */
+async function migrateDataSheetSchema(sheet: any): Promise<void> {
+  await withRetry(() => sheet.loadHeaderRow(), "loadHeaderRow (migrate)").catch(
+    () => {}
+  );
+  const headers: string[] = sheet.headerValues || [];
+
+  if (headers.includes("發佈時間")) return; // already current
+
+  const updateInfoIdx = headers.indexOf("Update Info");
+  if (updateInfoIdx === -1) {
+    console.log("  ⚠️ Unexpected Data sheet layout, skipping schema migration");
+    return;
+  }
+
+  console.log("  🔧 Migrating Data sheet: adding 發佈時間 / 更新時間 columns...");
+
+  // Insert a blank column at the 發佈時間 position (before Update Info).
+  await withRetry(
+    () =>
+      sheet.insertDimension(
+        "COLUMNS",
+        { startIndex: updateInfoIdx, endIndex: updateInfoIdx + 1 },
+        false
+      ),
+    "insertDimension (migrate)",
+    { maxRetries: 1 }
+  );
+
+  // Write the new header cell and rename the shifted "Update Info" header.
+  await withRetry(
+    () =>
+      sheet.loadCells({
+        startRowIndex: 0,
+        endRowIndex: 1,
+        startColumnIndex: updateInfoIdx,
+        endColumnIndex: updateInfoIdx + 2,
+      }),
+    "loadCells (migrate header)"
+  );
+  sheet.getCell(0, updateInfoIdx).value = "發佈時間";
+  sheet.getCell(0, updateInfoIdx + 1).value = "更新時間";
+  await withRetry(() => sheet.saveUpdatedCells(), "saveUpdatedCells (migrate)");
+
+  await withRetry(() => sheet.loadHeaderRow(), "loadHeaderRow (post-migrate)");
+  console.log("  ✅ Schema migration complete");
 }
 
 async function formatConfigSheet(sheet: any) {
@@ -445,13 +534,17 @@ async function getExistingProperties(
 async function writeListingsToSheet(
   sheet: any,
   listings: ListingItem[],
-  existingProperties: Map<string, { row: any; rowIndex: number }>
+  existingProperties: Map<string, { row: any; rowIndex: number }>,
+  publishMap: Map<string, string> = new Map()
 ): Promise<{ added: number; updated: number; unchanged: number; inactive: number }> {
-  // Format: YYYY-MM-DD HH:MM:SS
-  const now = new Date()
+  // Crawl instant: `crawlDate` anchors relative→absolute conversion; `now` is the
+  // human-readable stamp used for First Seen / Last Updated (kept as-is, UTC).
+  const crawlDate = new Date();
+  const now = crawlDate
     .toISOString()
     .replace("T", " ")
     .replace(/\.\d{3}Z$/, "");
+  const threshold = CONFIG.REFRESH_UPDATE_THRESHOLD_MS;
   let added = 0;
   let updated = 0;
   let unchanged = 0;
@@ -459,7 +552,7 @@ async function writeListingsToSheet(
   const seenIds = new Set<string>();
   const newRows: any[][] = []; // Collect new rows to insert at top
 
-  // Collect updates for batch operation (columns E-T, indices 4-19)
+  // Collect updates for batch operation (columns E-U)
   const rowsToUpdate: { rowIndex: number; data: any[] }[] = [];
   // Collect rows to mark as inactive
   const rowsToInactivate: number[] = [];
@@ -472,15 +565,30 @@ async function writeListingsToSheet(
     const titleWithLink = `=HYPERLINK("${
       listing.url
     }", "${listing.title.replace(/"/g, '""')}")`;
+    const tagsStr = listing.tags.join(", ");
+    // Absolute update time derived from the relative refresh string ("" if unparseable)
+    const candidateUpdate = refreshToAbsolute(listing.updateInfo, crawlDate);
 
     if (existing) {
       const { row: existingRow, rowIndex } = existing;
-      // Check if any data changed (compare key fields)
-      const tagsStr = listing.tags.join(", ");
+
+      // 更新時間: only rewrite when the new value reflects a *real* refresh
+      // (jumped ahead past the drift threshold), otherwise preserve (null).
+      const storedUpdate = existingRow.get("更新時間") || "";
+      const refreshAdvanced = candidateUpdate
+        ? shouldUpdateRefresh(storedUpdate, candidateUpdate, threshold)
+        : false;
+      const updateCell = refreshAdvanced ? candidateUpdate : null;
+
+      // 發佈時間: immutable — only fill it when missing and we fetched one now.
+      const fetchedPublish = publishMap.get(listing.id) || "";
+      const publishCell =
+        !existingRow.get("發佈時間") && fetchedPublish ? fetchedPublish : null;
 
       // Note: Title comparison uses raw title text (not HYPERLINK formula)
-      // because sheet returns displayed value, not formula string
-      const hasChanges =
+      // because sheet returns displayed value, not formula string.
+      // Update/publish times are handled separately above (not here).
+      const otherChanged =
         existingRow.get("Title") !== listing.title ||
         Number(existingRow.get("Price")) !== listing.priceNumber ||
         existingRow.get("Property Type") !== listing.propertyType ||
@@ -491,31 +599,33 @@ async function writeListingsToSheet(
         existingRow.get("Tags") !== tagsStr ||
         existingRow.get("Agent Type") !== listing.agentType ||
         existingRow.get("Agent Name") !== listing.agentName ||
-        existingRow.get("Update Info") !== listing.updateInfo ||
         existingRow.get("Status") !== "Active";
       // Note: Views excluded from change detection (changes too frequently)
 
+      const hasChanges = otherChanged || refreshAdvanced || publishCell !== null;
+
       if (hasChanges) {
-        // Collect update data for batch operation (columns E-T, indices 4-19)
+        // Collect update data for batch operation (columns E-U)
         rowsToUpdate.push({
           rowIndex,
           data: [
-            titleWithLink, // E: Title (index 4)
-            listing.priceNumber, // F: Price (index 5) - numeric with format
-            listing.propertyType, // G: Property Type (index 6)
-            listing.size, // H: Size (index 7)
-            listing.floor, // I: Floor (index 8)
-            listing.location, // J: Location (index 9)
-            listing.metroDistance, // K: Metro Distance (index 10)
-            tagsStr, // L: Tags (index 11)
-            listing.agentType, // M: Agent Type (index 12)
-            listing.agentName, // N: Agent Name (index 13)
-            listing.updateInfo, // O: Update Info (index 14)
-            listing.views, // P: Views (index 15)
-            listing.sourceUrl, // Q: Source URL (index 16)
-            null, // R: First Seen (index 17) - preserve
-            now, // S: Last Updated (index 18)
-            "Active", // T: Status (index 19)
+            titleWithLink, // E: Title
+            listing.priceNumber, // F: Price - numeric with format
+            listing.propertyType, // G: Property Type
+            listing.size, // H: Size
+            listing.floor, // I: Floor
+            listing.location, // J: Location
+            listing.metroDistance, // K: Metro Distance
+            tagsStr, // L: Tags
+            listing.agentType, // M: Agent Type
+            listing.agentName, // N: Agent Name
+            publishCell, // O: 發佈時間 (null = preserve)
+            updateCell, // P: 更新時間 (null = preserve)
+            listing.views, // Q: Views
+            listing.sourceUrl, // R: Source URL
+            null, // S: First Seen - preserve
+            now, // T: Last Updated
+            "Active", // U: Status
           ],
         });
         updated++;
@@ -525,26 +635,27 @@ async function writeListingsToSheet(
     } else {
       // Collect new rows to insert at top later
       newRows.push([
-        "", // A: ★ Mark (index 0)
-        "", // B: ★ Rating (index 1)
-        "", // C: ★ Remarks (index 2)
-        listing.id, // D: Property ID (index 3)
-        titleWithLink, // E: Title (index 4)
-        listing.priceNumber, // F: Price (index 5) - numeric with format
-        listing.propertyType, // G: Property Type (index 6)
-        listing.size, // H: Size (index 7)
-        listing.floor, // I: Floor (index 8)
-        listing.location, // J: Location (index 9)
-        listing.metroDistance, // K: Metro Distance (index 10)
-        listing.tags.join(", "), // L: Tags (index 11)
-        listing.agentType, // M: Agent Type (index 12)
-        listing.agentName, // N: Agent Name (index 13)
-        listing.updateInfo, // O: Update Info (index 14)
-        listing.views, // P: Views (index 15)
-        listing.sourceUrl, // Q: Source URL (index 16)
-        now, // R: First Seen (index 17)
-        now, // S: Last Updated (index 18)
-        "Active", // T: Status (index 19)
+        "", // A: ★ Mark
+        "", // B: ★ Rating
+        "", // C: ★ Remarks
+        listing.id, // D: Property ID
+        titleWithLink, // E: Title
+        listing.priceNumber, // F: Price - numeric with format
+        listing.propertyType, // G: Property Type
+        listing.size, // H: Size
+        listing.floor, // I: Floor
+        listing.location, // J: Location
+        listing.metroDistance, // K: Metro Distance
+        tagsStr, // L: Tags
+        listing.agentType, // M: Agent Type
+        listing.agentName, // N: Agent Name
+        publishMap.get(listing.id) || "", // O: 發佈時間
+        candidateUpdate || "", // P: 更新時間
+        listing.views, // Q: Views
+        listing.sourceUrl, // R: Source URL
+        now, // S: First Seen
+        now, // T: Last Updated
+        "Active", // U: Status
       ]);
       added++;
     }
@@ -578,14 +689,14 @@ async function writeListingsToSheet(
         "insertDimension",
         { maxRetries: 1 }
       );
-      // Load cells and set values (columns A-T, 20 columns total)
+      // Load cells and set values (all columns A..last)
       await withRetry(
         () =>
           sheet.loadCells({
             startRowIndex: 1,
             endRowIndex: 1 + newRows.length,
             startColumnIndex: 0,
-            endColumnIndex: 20, // Column T: Status (index 19)
+            endColumnIndex: COL_COUNT,
           }),
         "loadCells (newRows)"
       );
@@ -594,8 +705,8 @@ async function writeListingsToSheet(
         for (let j = 0; j < rowData.length; j++) {
           const cell = sheet.getCell(1 + i, j);
           cell.value = rowData[j];
-          // Apply number format to Price column (index 5)
-          if (j === 5 && rowData[j] !== null && rowData[j] !== "") {
+          // Apply number format to Price column
+          if (j === COL["Price"] && rowData[j] !== null && rowData[j] !== "") {
             cell.numberFormat = { type: "NUMBER", pattern: '#,##0"元/月"' };
           }
         }
@@ -634,28 +745,29 @@ async function writeListingsToSheet(
       const minRow = Math.min(...allUpdateIndices);
       const maxRow = Math.max(...allUpdateIndices);
 
-      // Load all cells that need updating (columns E-T, indices 4-19)
+      // Load all cells that need updating (columns E..last)
       // Skip A-C (user columns) and D (Property ID - never changes)
       await withRetry(
         () =>
           sheet.loadCells({
             startRowIndex: minRow,
             endRowIndex: maxRow + 1,
-            startColumnIndex: 4, // Column E: Title (skip A-D)
-            endColumnIndex: 20, // Column T: Status (index 19)
+            startColumnIndex: FIRST_CRAWLER_COL, // Column E: Title (skip A-D)
+            endColumnIndex: COL_COUNT,
           }),
         "loadCells (batchUpdate)"
       );
 
-      // Apply updates (data array maps to columns E-T, indices 4-19)
+      // Apply updates (data array maps to columns E..last)
+      const priceDataIdx = COL["Price"] - FIRST_CRAWLER_COL;
       for (const { rowIndex, data } of rowsToUpdate) {
         for (let col = 0; col < data.length; col++) {
           // Skip null values (preserve existing, e.g., First Seen)
           if (data[col] !== null) {
-            const cell = sheet.getCell(rowIndex, col + 4); // +4 = column E
+            const cell = sheet.getCell(rowIndex, col + FIRST_CRAWLER_COL);
             cell.value = data[col];
-            // Apply number format to Price column (col 1 = index 5 after +4 offset)
-            if (col === 1) {
+            // Apply number format to Price column
+            if (col === priceDataIdx) {
               cell.numberFormat = { type: "NUMBER", pattern: '#,##0"元/月"' };
             }
           }
@@ -664,8 +776,8 @@ async function writeListingsToSheet(
 
       // Apply inactive status (only Last Updated and Status columns)
       for (const rowIndex of rowsToInactivate) {
-        sheet.getCell(rowIndex, 18).value = now; // S: Last Updated (index 18)
-        sheet.getCell(rowIndex, 19).value = "Inactive"; // T: Status (index 19)
+        sheet.getCell(rowIndex, COL["Last Updated"]).value = now;
+        sheet.getCell(rowIndex, COL["Status"]).value = "Inactive";
       }
 
       // Single batch save for all updates
@@ -756,6 +868,7 @@ async function extractListingsFromPage(
       agentType,
       agentName,
       updateInfo: item.refresh_time || "",
+      publishTime: "", // list pages have no absolute time; filled from detail page
       views: item.browse_count || 0,
       url: `https://rent.591.com.tw/${item.id}`,
       sourceUrl,
@@ -763,6 +876,110 @@ async function extractListingsFromPage(
   });
 
   return listings;
+}
+
+/**
+ * Fetch a single listing's absolute publish time from its detail page.
+ * 591 only exposes this as `favData.posttime` (unix seconds) in __NUXT__, and
+ * only on the detail page. Publish time is immutable, so callers fetch it once
+ * per listing. Returns "" on any failure (block, timeout, missing field) so the
+ * crawl degrades gracefully rather than aborting.
+ */
+async function fetchPublishTime(
+  context: BrowserContext,
+  id: string
+): Promise<string> {
+  const url = `https://rent.591.com.tw/${id}`;
+  const page = await context.newPage();
+  try {
+    const posttime = await Promise.race([
+      (async () => {
+        const response = await page.goto(url, {
+          waitUntil: "domcontentloaded",
+          timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
+        });
+        const challenge = await detectChallengePage(response, page, url);
+        if (challenge.blocked) {
+          console.log(`    ⚠️ Detail ${id} blocked: ${challenge.reason}`);
+          return 0;
+        }
+        return await page.evaluate(() => {
+          const nuxt = (window as any).__NUXT__;
+          if (!nuxt || !nuxt.data) return 0;
+          for (const key of Object.keys(nuxt.data)) {
+            const d = nuxt.data[key]?.data;
+            if (d && d.favData && typeof d.favData.posttime === "number") {
+              return d.favData.posttime;
+            }
+          }
+          return 0;
+        });
+      })(),
+      new Promise<number>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Detail ${id} timed out`)),
+          CONFIG.PAGE_CRAWL_TIMEOUT_MS
+        )
+      ),
+    ]);
+    return unixToTaipei(posttime as number);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`    ⚠️ Detail ${id} fetch failed: ${message}`);
+    return "";
+  } finally {
+    await Promise.race([
+      page.close(),
+      new Promise<void>((r) => setTimeout(r, 5000)),
+    ]).catch(() => {});
+  }
+}
+
+/**
+ * Enrich listings with absolute publish times by visiting detail pages.
+ * Budget (MAX_DETAIL_FETCHES_PER_RUN) is spent on new listings first, then any
+ * leftover backfills existing rows whose 發佈時間 is still empty. Returns a
+ * Map<id, publishTime> consumed by writeListingsToSheet.
+ */
+async function fetchPublishTimes(
+  context: BrowserContext,
+  listings: ListingItem[],
+  existingProperties: Map<string, { row: any; rowIndex: number }>
+): Promise<Map<string, string>> {
+  const newIds = listings
+    .filter((l) => !existingProperties.has(l.id))
+    .map((l) => l.id);
+
+  // Backfill only ACTIVE rows still missing a publish time. Inactive (delisted)
+  // rows 404 on their detail page, so retrying them would waste budget forever.
+  const existing = Array.from(existingProperties, ([id, { row }]) => ({
+    id,
+    hasPublish: !!row.get("發佈時間"),
+    isActive: row.get("Status") === "Active",
+  }));
+
+  const budget = CONFIG.MAX_DETAIL_FETCHES_PER_RUN;
+  const capped = selectPublishTargets(newIds, existing, budget);
+
+  const publishMap = new Map<string, string>();
+  if (capped.length === 0) return publishMap;
+
+  console.log(
+    `\n🕑 Fetching publish time for ${capped.length} listing(s) ` +
+      `(${newIds.length} new, ${capped.length - newIds.length} backfill)...`
+  );
+
+  for (let i = 0; i < capped.length; i++) {
+    if (i > 0) {
+      const delay = CONFIG.REQUEST_DELAY_MS + Math.floor(Math.random() * 4000);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+    const publishTime = await fetchPublishTime(context, capped[i]);
+    if (publishTime) publishMap.set(capped[i], publishTime);
+  }
+
+  console.log(`  Resolved ${publishMap.size}/${capped.length} publish times`);
+  return publishMap;
 }
 
 async function crawlUrl(
@@ -898,6 +1115,7 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
   const urls = await ensureConfigSheet(doc);
 
   const sheet = await ensureDataSheet(doc);
+  await migrateDataSheetSchema(sheet);
   const existingProperties = await getExistingProperties(sheet);
   console.log(`Found ${existingProperties.size} existing properties in sheet`);
 
@@ -932,12 +1150,20 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
     );
     console.log(`Unique listings: ${uniqueListings.length}`);
 
+    // Fetch absolute publish times from detail pages (new listings + backfill)
+    const publishMap = await fetchPublishTimes(
+      context,
+      uniqueListings,
+      existingProperties
+    );
+
     // Write to Google Sheets
     console.log("\n💾 Writing to Google Sheets...");
     const { added, updated, unchanged, inactive } = await writeListingsToSheet(
       sheet,
       uniqueListings,
-      existingProperties
+      existingProperties,
+      publishMap
     );
     console.log(
       `✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}, Inactive: ${inactive}`
