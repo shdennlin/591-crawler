@@ -8,11 +8,11 @@ name: 591 Rental Crawler
 # │  2. Convert to UTC: subtract 8 hours for UTC+8 (Taiwan)         │
 # │  3. Update the cron expressions                                 │
 # │                                                                 │
-# │  Current: 06:00, 12:00, 16:00, 22:00 (UTC+8 Taiwan)             │
+# │  Current: 06,09,12,16,20,23 (UTC+8 Taiwan) — 6x daily           │
 # │  Cron format: 'minute hour * * *' (runs daily)                  │
 # │                                                                 │
 # │  Branch behavior:                                                │
-# │  - main: Scheduled runs (4x daily) + manual trigger             │
+# │  - main: Scheduled runs (6x daily) + manual trigger             │
 # │  - develop: Manual trigger only (for testing)                   │
 # └─────────────────────────────────────────────────────────────────┘
 on:
@@ -20,9 +20,11 @@ on:
     # Local Time (UTC+8)  →  UTC Time  →  Cron
     # ─────────────────────────────────────────
     - cron: '0 22 * * *'   # 06:00 UTC+8 → 22:00 UTC
+    - cron: '0 1 * * *'    # 09:00 UTC+8 → 01:00 UTC
     - cron: '0 4 * * *'    # 12:00 UTC+8 → 04:00 UTC
     - cron: '0 8 * * *'    # 16:00 UTC+8 → 08:00 UTC
-    - cron: '0 14 * * *'   # 22:00 UTC+8 → 14:00 UTC
+    - cron: '0 12 * * *'   # 20:00 UTC+8 → 12:00 UTC
+    - cron: '0 15 * * *'   # 23:00 UTC+8 → 15:00 UTC
   workflow_dispatch:  # Allow manual trigger on any branch
 
 jobs:

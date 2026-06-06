@@ -12,7 +12,7 @@ const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
 const pad = (n: number): string => String(n).padStart(2, "0");
 
 /** Format a UTC instant as "YYYY-MM-DD HH:MM:SS" in Asia/Taipei. */
-function formatTaipei(instantMs: number): string {
+export function formatTaipei(instantMs: number): string {
   const d = new Date(instantMs + TAIPEI_OFFSET_MS);
   return (
     `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +

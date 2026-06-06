@@ -20,7 +20,11 @@ import "dotenv/config";
 import { chromium, Browser, Page, BrowserContext, Response } from "playwright";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
-import { refreshToAbsolute, shouldUpdateRefresh } from "./time-utils";
+import {
+  refreshToAbsolute,
+  shouldUpdateRefresh,
+  formatTaipei,
+} from "./time-utils";
 
 // ============================================================
 // CONFIGURATION - Edit these values
@@ -50,6 +54,13 @@ const CONFIG = {
   // Sheet names
   SHEET_DATA: "Data",
   SHEET_CONFIG: "Config",
+
+  // User-facing crawl frequency, shown in the Config sheet so sheet viewers know
+  // how fresh the data is. KEEP IN SYNC with the cron in
+  // .github/workflows/crawl.yml — GitHub's schedule has no runtime API to read,
+  // so this label is maintained by hand.
+  CRAWL_SCHEDULE_NOTE:
+    "每天自動更新 6 次（台灣時間 06:00 / 09:00 / 12:00 / 16:00 / 20:00 / 23:00）",
 };
 
 // ============================================================
@@ -368,13 +379,14 @@ async function migrateDataSheetSchema(sheet: any): Promise<void> {
 }
 
 async function formatConfigSheet(sheet: any) {
-  // Load cells for columns A-F (data columns + helper columns)
-  // Rows: header (0), example (1), instructions (2-6)
+  // Load cells for columns A-F (data columns + helper columns).
+  // Rows 0-4: header + Example block. Tips + status (rows 5+) are written
+  // separately by writeConfigStatusBlock() every run.
   await withRetry(
     () =>
       sheet.loadCells({
         startRowIndex: 0,
-        endRowIndex: 7,
+        endRowIndex: 5,
         startColumnIndex: 0,
         endColumnIndex: 6,
       }),
@@ -431,13 +443,8 @@ async function formatConfigSheet(sheet: any) {
     { col: 4, row: 4, value: "Status:", bold: false },
     { col: 5, row: 4, value: "Active", bold: false },
 
-    // Row 5: Tips header
-    { col: 4, row: 5, value: "💡 Tips:", bold: true },
-    { col: 5, row: 5, value: "", bold: false },
-
-    // Row 6: Tips content
-    { col: 4, row: 6, value: "• Set Status to 'Inactive' to skip a URL", bold: false },
-    { col: 5, row: 6, value: "• Get URLs from 591.com.tw search page", bold: false },
+    // Tips + status block (rows 5+) are written every run by
+    // writeConfigStatusBlock() so existing sheets stay current.
   ];
 
   // Apply helper content with gray background
@@ -454,6 +461,49 @@ async function formatConfigSheet(sheet: any) {
   console.log("  ✨ Config sheet formatted with colors, notes, and instructions");
 }
 
+/**
+ * Write the Tips + status block into the Config sheet's helper area (columns
+ * E-F; D is the spacer). Owned here — not in formatConfigSheet() — and rewritten
+ * every crawl so existing sheets always reflect the current layout and data.
+ * Layout (0-indexed rows, after the Example block ends at row 4):
+ *   row 5  💡 Tips:
+ *   row 6  • Set Status ...        (one bullet per row, E only)
+ *   row 7  • Get URLs ...
+ *   row 8  • Sort by '最新' ...
+ *   row 10 ⏰ 更新頻率： <schedule>  (static promise — the cron)
+ *   row 11 🕐 最後更新： <timestamp> (dynamic fact — when this run happened)
+ */
+async function writeConfigStatusBlock(sheet: any): Promise<void> {
+  const gray = { red: 0.95, green: 0.95, blue: 0.95 };
+  // { row, col, value, bold }. Empty-string F cells clear the old two-column
+  // tip layout (second bullet used to sit in column F) on existing sheets.
+  const cells = [
+    { row: 5, col: 4, value: "💡 Tips:", bold: true },
+    { row: 6, col: 4, value: "• Set Status to 'Inactive' to skip a URL", bold: false },
+    { row: 6, col: 5, value: "", bold: false },
+    { row: 7, col: 4, value: "• Get URLs from 591.com.tw search page", bold: false },
+    { row: 7, col: 5, value: "", bold: false },
+    { row: 8, col: 4, value: "• Sort by '最新' (sort=posttime_desc) to catch new listings sooner", bold: false },
+    { row: 8, col: 5, value: "", bold: false },
+    { row: 10, col: 4, value: "⏰ 更新頻率：", bold: true },
+    { row: 10, col: 5, value: CONFIG.CRAWL_SCHEDULE_NOTE, bold: false },
+    { row: 11, col: 4, value: "🕐 最後更新：", bold: true },
+    { row: 11, col: 5, value: `${formatTaipei(Date.now())}（台灣時間）`, bold: false },
+  ];
+
+  await withRetry(() => sheet.loadCells("E6:F12"), "loadCells (statusBlock)");
+  for (const { row, col, value, bold } of cells) {
+    const cell = sheet.getCell(row, col);
+    cell.value = value;
+    cell.backgroundColor = gray;
+    if (bold) cell.textFormat = { bold: true };
+  }
+  await withRetry(
+    () => sheet.saveUpdatedCells(),
+    "saveUpdatedCells (statusBlock)"
+  );
+}
+
 async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
   let sheet = doc.sheetsByTitle[CONFIG.SHEET_CONFIG];
 
@@ -467,6 +517,9 @@ async function ensureConfigSheet(doc: GoogleSpreadsheet): Promise<string[]> {
     // Format and add helper instructions
     await formatConfigSheet(sheet);
   }
+
+  // Refresh the user-facing Tips + status block every run (idempotent).
+  await writeConfigStatusBlock(sheet);
 
   // Read active URLs from sheet
   const rows = await withRetry<any[]>(() => sheet.getRows(), "getRows (config)");
