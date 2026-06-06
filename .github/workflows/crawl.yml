@@ -28,10 +28,10 @@ on:
 jobs:
   crawl:
     runs-on: [self-hosted, pve-homelab]
-    # Each sheet spends ~2 min mostly on throttled detail-page fetches
-    # (anti-bot delay of ~4s between visits). 6 min cut off the 2nd sheet
-    # mid-fetch and lost its crawled rows; 15 min gives headroom for growth.
-    timeout-minutes: 15
+    # List-page crawl only (detail-page publish-time fetching was removed), so a
+    # run is ~1 min/sheet plus setup. 10 min is ample headroom and still catches
+    # a genuine hang (stuck page / Sheets API) without waiting too long.
+    timeout-minutes: 10
     # Schedule runs only on main branch; manual dispatch works on any branch
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
 

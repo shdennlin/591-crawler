@@ -1,22 +1,9 @@
 import { test, expect, describe } from "bun:test";
 import {
-  unixToTaipei,
   refreshToAbsolute,
   parseTaipei,
   shouldUpdateRefresh,
 } from "./time-utils";
-
-describe("unixToTaipei", () => {
-  test("converts unix seconds to UTC+8 'YYYY-MM-DD HH:MM:SS'", () => {
-    // 1780584053 == 2026-06-04 22:40:53 in Asia/Taipei (verified on 591 detail page)
-    expect(unixToTaipei(1780584053)).toBe("2026-06-04 22:40:53");
-  });
-
-  test("returns empty string for falsy/invalid input", () => {
-    expect(unixToTaipei(0)).toBe("");
-    expect(unixToTaipei(NaN)).toBe("");
-  });
-});
 
 describe("refreshToAbsolute", () => {
   // 2026-06-05T01:00:00Z == 2026-06-05 09:00:00 in Asia/Taipei
@@ -41,9 +28,9 @@ describe("refreshToAbsolute", () => {
 });
 
 describe("parseTaipei", () => {
-  test("round-trips with unixToTaipei", () => {
-    const s = unixToTaipei(1780584053);
-    expect(parseTaipei(s)).toBe(1780584053 * 1000);
+  test("parses 'YYYY-MM-DD HH:MM:SS' UTC+8 back to epoch ms", () => {
+    // 2026-06-04 22:40:53 UTC+8 == 1780584053 unix seconds
+    expect(parseTaipei("2026-06-04 22:40:53")).toBe(1780584053 * 1000);
   });
 
   test("returns NaN for empty/invalid", () => {

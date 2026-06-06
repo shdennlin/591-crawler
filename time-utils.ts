@@ -2,10 +2,9 @@
  * Time helpers for the 591 crawler.
  *
  * 591 never exposes an absolute "update" timestamp — only relative Chinese
- * strings ("5分鐘內更新", "2天前更新"). The detail page does expose an absolute
- * publish timestamp (`favData.posttime`, unix seconds). These helpers normalise
- * both into a single sortable "YYYY-MM-DD HH:MM:SS" string in Asia/Taipei
- * (UTC+8, no DST), so the sheet shows stable, comparable times.
+ * strings ("5分鐘內更新", "2天前更新"). These helpers normalise them into a single
+ * sortable "YYYY-MM-DD HH:MM:SS" string in Asia/Taipei (UTC+8, no DST), so the
+ * sheet shows stable, comparable times.
  */
 
 const TAIPEI_OFFSET_MS = 8 * 60 * 60 * 1000;
@@ -19,12 +18,6 @@ function formatTaipei(instantMs: number): string {
     `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
     `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`
   );
-}
-
-/** Convert 591 detail-page `favData.posttime` (unix seconds) to UTC+8 string. */
-export function unixToTaipei(unixSeconds: number): string {
-  if (!unixSeconds || !Number.isFinite(unixSeconds)) return "";
-  return formatTaipei(unixSeconds * 1000);
 }
 
 /** Parse a "YYYY-MM-DD HH:MM:SS" UTC+8 string back to epoch milliseconds. */

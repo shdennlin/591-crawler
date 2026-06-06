@@ -40,16 +40,15 @@ Parse Listings → Deduplicate by Property ID → Write to Data Sheet
 4. `ensureConfigSheet()` - Reads active URLs from Config sheet
 5. `crawlUrl()` - Navigates pages with Playwright, handles pagination
 6. `extractListingsFromPage()` - Parses `window.__NUXT__` for listing data (591 uses Nuxt.js SSR)
-7. `fetchPublishTimes()` - Visits detail pages to read absolute publish time (budget-capped)
-8. `migrateDataSheetSchema()` - Idempotently adds 發佈時間/更新時間 columns to existing sheets
-9. `writeListingsToSheet()` - Batch writes with deduplication, marks removed listings as "Inactive"
+7. `migrateDataSheetSchema()` - Idempotently adds 發佈時間/更新時間 columns to existing sheets
+8. `writeListingsToSheet()` - Batch writes with deduplication, marks removed listings as "Inactive"
 
 ### Data Extraction
 
 591.com.tw embeds listing data in `window.__NUXT__.data[key].data.items`. The crawler evaluates this in browser context after waiting for `networkidle` state.
 
 **Time fields** (see `time-utils.ts`): 591 list pages expose no absolute timestamps — only relative strings (`refresh_time`, e.g. "2天前更新"). The crawler:
-- **發佈時間 (publish)**: read from the *detail page* `favData.posttime` (unix seconds) → UTC+8. Immutable, so fetched once per listing (new listings + capped backfill of old rows).
+- **發佈時間 (publish)**: absolute publish time lives only on the *detail page* (`favData.posttime`). Fetching it required visiting every listing's detail page — slow (~4s anti-bot delay each) and bot-risky — so detail-page crawling was **removed**. The column is kept and existing values are preserved, but new rows are left blank.
 - **更新時間 (update)**: derived from the relative `refresh_time` anchored to crawl time → UTC+8. Recomputed each run but only rewritten when it jumps past `REFRESH_UPDATE_THRESHOLD_MS` (a real refresh vs. bucket drift).
 
 ### Google Sheets Structure

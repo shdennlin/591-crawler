@@ -20,12 +20,7 @@ import "dotenv/config";
 import { chromium, Browser, Page, BrowserContext, Response } from "playwright";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
-import {
-  unixToTaipei,
-  refreshToAbsolute,
-  shouldUpdateRefresh,
-} from "./time-utils";
-import { selectPublishTargets } from "./publish-targets";
+import { refreshToAbsolute, shouldUpdateRefresh } from "./time-utils";
 
 // ============================================================
 // CONFIGURATION - Edit these values
@@ -47,10 +42,6 @@ const CONFIG = {
   SHEET_RETRY_DELAY_MS: 2_000, // base delay between retries (linear backoff)
 
   // Publish/update time settings
-  // Detail pages are the only source of absolute publish time (favData.posttime).
-  // Cap detail-page visits per run so the job stays within the GitHub Actions
-  // time budget; new listings are prioritised, leftover budget backfills old rows.
-  MAX_DETAIL_FETCHES_PER_RUN: 25,
   // "更新時間" is derived from a coarse relative string and recomputed each run,
   // so it drifts a few hours. Only treat a newer value as a *real* refresh when
   // it jumps ahead by more than this (must exceed the max crawl-schedule gap).
@@ -252,7 +243,6 @@ interface ListingItem {
   agentType: string;
   agentName: string;
   updateInfo: string; // raw 591 relative refresh string ("2天前更新")
-  publishTime: string; // absolute publish time (UTC+8), "" if not fetched yet
   views: number;
   url: string;
   sourceUrl: string;
@@ -534,8 +524,7 @@ async function getExistingProperties(
 async function writeListingsToSheet(
   sheet: any,
   listings: ListingItem[],
-  existingProperties: Map<string, { row: any; rowIndex: number }>,
-  publishMap: Map<string, string> = new Map()
+  existingProperties: Map<string, { row: any; rowIndex: number }>
 ): Promise<{ added: number; updated: number; unchanged: number; inactive: number }> {
   // Crawl instant: `crawlDate` anchors relative→absolute conversion; `now` is the
   // human-readable stamp used for First Seen / Last Updated (kept as-is, UTC).
@@ -580,11 +569,6 @@ async function writeListingsToSheet(
         : false;
       const updateCell = refreshAdvanced ? candidateUpdate : null;
 
-      // 發佈時間: immutable — only fill it when missing and we fetched one now.
-      const fetchedPublish = publishMap.get(listing.id) || "";
-      const publishCell =
-        !existingRow.get("發佈時間") && fetchedPublish ? fetchedPublish : null;
-
       // Note: Title comparison uses raw title text (not HYPERLINK formula)
       // because sheet returns displayed value, not formula string.
       // Update/publish times are handled separately above (not here).
@@ -602,7 +586,7 @@ async function writeListingsToSheet(
         existingRow.get("Status") !== "Active";
       // Note: Views excluded from change detection (changes too frequently)
 
-      const hasChanges = otherChanged || refreshAdvanced || publishCell !== null;
+      const hasChanges = otherChanged || refreshAdvanced;
 
       if (hasChanges) {
         // Collect update data for batch operation (columns E-U)
@@ -619,7 +603,7 @@ async function writeListingsToSheet(
             tagsStr, // L: Tags
             listing.agentType, // M: Agent Type
             listing.agentName, // N: Agent Name
-            publishCell, // O: 發佈時間 (null = preserve)
+            null, // O: 發佈時間 — detail-page crawl removed; preserve existing
             updateCell, // P: 更新時間 (null = preserve)
             listing.views, // Q: Views
             listing.sourceUrl, // R: Source URL
@@ -649,7 +633,7 @@ async function writeListingsToSheet(
         tagsStr, // L: Tags
         listing.agentType, // M: Agent Type
         listing.agentName, // N: Agent Name
-        publishMap.get(listing.id) || "", // O: 發佈時間
+        "", // O: 發佈時間 — left blank (detail-page crawl removed)
         candidateUpdate || "", // P: 更新時間
         listing.views, // Q: Views
         listing.sourceUrl, // R: Source URL
@@ -868,7 +852,6 @@ async function extractListingsFromPage(
       agentType,
       agentName,
       updateInfo: item.refresh_time || "",
-      publishTime: "", // list pages have no absolute time; filled from detail page
       views: item.browse_count || 0,
       url: `https://rent.591.com.tw/${item.id}`,
       sourceUrl,
@@ -876,118 +859,6 @@ async function extractListingsFromPage(
   });
 
   return listings;
-}
-
-/**
- * Fetch a single listing's absolute publish time from its detail page.
- * 591 only exposes this as `favData.posttime` (unix seconds) in __NUXT__, and
- * only on the detail page. Publish time is immutable, so callers fetch it once
- * per listing. Returns "" on any failure (block, timeout, missing field) so the
- * crawl degrades gracefully rather than aborting.
- */
-async function fetchPublishTime(
-  context: BrowserContext,
-  id: string
-): Promise<string> {
-  const url = `https://rent.591.com.tw/${id}`;
-  const page = await context.newPage();
-  try {
-    const posttime = await Promise.race([
-      (async () => {
-        const response = await page.goto(url, {
-          waitUntil: "domcontentloaded",
-          timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
-        });
-        const challenge = await detectChallengePage(response, page, url);
-        if (challenge.blocked) {
-          console.log(`    ⚠️ Detail ${id} blocked: ${challenge.reason}`);
-          return 0;
-        }
-        return await page.evaluate(() => {
-          const nuxt = (window as any).__NUXT__;
-          if (!nuxt || !nuxt.data) return 0;
-          for (const key of Object.keys(nuxt.data)) {
-            const d = nuxt.data[key]?.data;
-            if (d && d.favData && typeof d.favData.posttime === "number") {
-              return d.favData.posttime;
-            }
-          }
-          return 0;
-        });
-      })(),
-      new Promise<number>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`Detail ${id} timed out`)),
-          CONFIG.PAGE_CRAWL_TIMEOUT_MS
-        )
-      ),
-    ]);
-    return unixToTaipei(posttime as number);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.log(`    ⚠️ Detail ${id} fetch failed: ${message}`);
-    return "";
-  } finally {
-    await Promise.race([
-      page.close(),
-      new Promise<void>((r) => setTimeout(r, 5000)),
-    ]).catch(() => {});
-  }
-}
-
-/**
- * Enrich listings with absolute publish times by visiting detail pages.
- * Budget (MAX_DETAIL_FETCHES_PER_RUN) is spent on new listings first, then any
- * leftover backfills existing rows whose 發佈時間 is still empty. Returns a
- * Map<id, publishTime> consumed by writeListingsToSheet.
- */
-async function fetchPublishTimes(
-  context: BrowserContext,
-  listings: ListingItem[],
-  existingProperties: Map<string, { row: any; rowIndex: number }>
-): Promise<Map<string, string>> {
-  const newIds = listings
-    .filter((l) => !existingProperties.has(l.id))
-    .map((l) => l.id);
-
-  // Backfill only ACTIVE rows still missing a publish time. Inactive (delisted)
-  // rows 404 on their detail page, so retrying them would waste budget forever.
-  const existing = Array.from(existingProperties, ([id, { row }]) => ({
-    id,
-    hasPublish: !!row.get("發佈時間"),
-    isActive: row.get("Status") === "Active",
-  }));
-
-  const budget = CONFIG.MAX_DETAIL_FETCHES_PER_RUN;
-  const capped = selectPublishTargets(newIds, existing, budget);
-
-  const publishMap = new Map<string, string>();
-  if (capped.length === 0) return publishMap;
-
-  // capped lists new IDs first (up to budget), then backfill. When new listings
-  // exceed the budget, the surplus is deferred to a later run — count what's
-  // actually in this batch so the breakdown never goes negative.
-  const newInBatch = Math.min(newIds.length, capped.length);
-  const backfillInBatch = capped.length - newInBatch;
-  const deferredNew = newIds.length - newInBatch;
-
-  console.log(
-    `\n🕑 Fetching publish time for ${capped.length} listing(s) ` +
-      `(${newInBatch} new, ${backfillInBatch} backfill` +
-      `${deferredNew > 0 ? `, ${deferredNew} new deferred to next run` : ""})...`
-  );
-
-  for (let i = 0; i < capped.length; i++) {
-    if (i > 0) {
-      const delay = CONFIG.REQUEST_DELAY_MS + Math.floor(Math.random() * 4000);
-      await new Promise((r) => setTimeout(r, delay));
-    }
-    const publishTime = await fetchPublishTime(context, capped[i]);
-    if (publishTime) publishMap.set(capped[i], publishTime);
-  }
-
-  console.log(`  Resolved ${publishMap.size}/${capped.length} publish times`);
-  return publishMap;
 }
 
 async function crawlUrl(
@@ -1158,20 +1029,12 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
     );
     console.log(`Unique listings: ${uniqueListings.length}`);
 
-    // Fetch absolute publish times from detail pages (new listings + backfill)
-    const publishMap = await fetchPublishTimes(
-      context,
-      uniqueListings,
-      existingProperties
-    );
-
     // Write to Google Sheets
     console.log("\n💾 Writing to Google Sheets...");
     const { added, updated, unchanged, inactive } = await writeListingsToSheet(
       sheet,
       uniqueListings,
-      existingProperties,
-      publishMap
+      existingProperties
     );
     console.log(
       `✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}, Inactive: ${inactive}`
