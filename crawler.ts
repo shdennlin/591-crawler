@@ -41,6 +41,8 @@ const CONFIG = {
   NETWORK_IDLE_TIMEOUT_MS: 15_000, // networkidle wait — graceful degradation
   PAGE_CRAWL_TIMEOUT_MS: 60_000, // per-page overall safety net
   PAGE_RETRY_COUNT: 3, // max retries for non-timeout page errors
+  URL_RETRY_COUNT: 3, // max attempts per URL (1 original + 2 retries) when 0 listings returned
+  URL_RETRY_DELAY_MS: 45_000, // delay between URL-level retries (45s)
   SHEET_OPERATION_TIMEOUT_MS: 30_000, // per Sheets API call timeout
   SHEET_RETRY_COUNT: 3, // max retries for Sheets operations
   SHEET_RETRY_DELAY_MS: 2_000, // base delay between retries (linear backoff)
@@ -1070,7 +1072,21 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
         await new Promise((r) => setTimeout(r, delay));
       }
       console.log(`\n📍 Crawling: ${urls[i]}`);
-      const listings = await crawlUrl(context, urls[i]);
+
+      let listings: ListingItem[] = [];
+      for (let attempt = 1; attempt <= CONFIG.URL_RETRY_COUNT; attempt++) {
+        if (attempt > 1) {
+          console.log(
+            `  🔄 URL retry ${attempt}/${CONFIG.URL_RETRY_COUNT}, waiting ${CONFIG.URL_RETRY_DELAY_MS / 1000}s...`
+          );
+          await new Promise((r) => setTimeout(r, CONFIG.URL_RETRY_DELAY_MS));
+        }
+        listings = await crawlUrl(context, urls[i]);
+        if (listings.length > 0) break;
+        if (attempt < CONFIG.URL_RETRY_COUNT) {
+          console.log(`  ⚠️ No listings returned, will retry...`);
+        }
+      }
       allListings.push(...listings);
     }
 
