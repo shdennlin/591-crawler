@@ -101,6 +101,10 @@ const COL: Record<string, number> = Object.fromEntries(
 const COL_COUNT = COLUMNS.length;
 const FIRST_CRAWLER_COL = COL["Title"]; // E — first column the crawler overwrites
 
+function ts() {
+  return new Date().toISOString().replace("T", " ").slice(0, 19) + "Z";
+}
+
 async function withRetry<T>(
   fn: () => Promise<T>,
   label: string,
@@ -863,7 +867,7 @@ async function extractListingsFromPage(
     await page
       .waitForLoadState("networkidle", { timeout: CONFIG.NETWORK_IDLE_TIMEOUT_MS })
       .catch(() => {
-        console.log("  networkidle timeout, proceeding with available data...");
+        console.log(`    [${ts()}] networkidle timeout, proceeding with available data...`);
       });
     nuxtData = await extractNuxt();
   }
@@ -944,39 +948,62 @@ async function crawlUrl(
         await new Promise((r) => setTimeout(r, delay));
       }
 
-      const page = await context.newPage();
+      let page: Page | null = null;
       try {
+        console.log(`    [${ts()}] newPage() starting...`);
+        page = await Promise.race([
+          context.newPage(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("newPage() timed out after 30s")),
+              30_000
+            )
+          ),
+        ]);
+        console.log(`    [${ts()}] newPage() done`);
+
         const listings = await Promise.race([
           (async () => {
-            const response = await page.goto(url, {
+            const gotoStart = Date.now();
+            console.log(`    [${ts()}] goto starting...`);
+            const response = await page!.goto(url, {
               waitUntil: "domcontentloaded",
               timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
             });
+            console.log(
+              `    [${ts()}] goto done in ${Date.now() - gotoStart}ms, status: ${response?.status() ?? "null"}`
+            );
 
-            const challenge = await detectChallengePage(response, page, url);
+            const challenge = await detectChallengePage(response, page!, url);
             if (challenge.blocked) {
               console.log(`  ⚠️ Blocked: ${challenge.reason}`);
               return [] as ListingItem[];
             }
 
-            await page
+            await page!
               .waitForSelector(".item-info-title, .item-title", {
                 timeout: CONFIG.PAGE_SELECTOR_TIMEOUT_MS,
               })
-              .catch(() => {});
+              .catch(() => {
+                console.log(`    [${ts()}] selector timeout, proceeding...`);
+              });
 
-            return await extractListingsFromPage(page, baseUrl);
+            const extractStart = Date.now();
+            const result = await extractListingsFromPage(page!, baseUrl);
+            console.log(`    [${ts()}] extracted ${result.length} listings in ${Date.now() - extractStart}ms`);
+            return result;
           })(),
           new Promise<ListingItem[]>((_, reject) =>
-            setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    `Page ${pageNum} timed out after ${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms`
-                  )
-                ),
-              CONFIG.PAGE_CRAWL_TIMEOUT_MS
-            )
+            setTimeout(() => {
+              console.log(
+                `    [${ts()}] ⏱️ per-page timeout (${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms) triggered`
+              );
+              reject(
+                new Error(
+                  `Page ${pageNum} timed out after ${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms`
+                )
+              );
+            }, CONFIG.PAGE_CRAWL_TIMEOUT_MS)
           ),
         ]);
 
@@ -993,7 +1020,7 @@ async function crawlUrl(
         break;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.log(`  ⚠️ Error: ${message}`);
+        console.log(`  [${ts()}] ⚠️ Error: ${message}`);
         if (message.includes("timed out")) {
           console.log(`  Skipping remaining pages for this URL.`);
           return allListings;
@@ -1004,11 +1031,17 @@ async function crawlUrl(
           );
         }
       } finally {
-        // Force-close with timeout to prevent hanging on stuck pages
-        await Promise.race([
-          page.close(),
-          new Promise<void>((r) => setTimeout(r, 5000)),
-        ]).catch(() => {});
+        if (page) {
+          const closeStart = Date.now();
+          await Promise.race([
+            page.close(),
+            new Promise<void>((r) => setTimeout(r, 5000)),
+          ]).catch(() => {});
+          const closeMs = Date.now() - closeStart;
+          if (closeMs > 1000) {
+            console.log(`    [${ts()}] ⚠️ page.close() took ${closeMs}ms`);
+          }
+        }
       }
     }
 
@@ -1054,12 +1087,14 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
   console.log(`Found ${existingProperties.size} existing properties in sheet`);
 
   // Launch browser with stealth
-  console.log("\n🌐 Launching browser...");
+  console.log(`\n🌐 [${ts()}] Launching browser...`);
+  const launchStart = Date.now();
   const browser = await chromium.launch({
     headless: true,
     args: ["--disable-blink-features=AutomationControlled"],
   });
   const context = await createStealthContext(browser);
+  console.log(`  Browser ready in ${Date.now() - launchStart}ms`);
 
   try {
     const allListings: ListingItem[] = [];
