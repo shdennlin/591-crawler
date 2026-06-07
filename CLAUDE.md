@@ -79,6 +79,8 @@ const CONFIG = {
   NETWORK_IDLE_TIMEOUT_MS: 15_000,  // networkidle graceful timeout
   PAGE_CRAWL_TIMEOUT_MS: 60_000,    // per-page overall safety net
   PAGE_RETRY_COUNT: 3,             // max retries for non-timeout page errors
+  URL_RETRY_COUNT: 3,              // max attempts per URL when 0 listings returned
+  URL_RETRY_DELAY_MS: 45_000,      // delay between URL-level retries (45s)
   SHEET_OPERATION_TIMEOUT_MS: 30_000, // per Sheets API call timeout
   SHEET_RETRY_COUNT: 3,          // max retries for Sheets operations
   SHEET_RETRY_DELAY_MS: 2_000,   // base delay between retries
@@ -93,14 +95,15 @@ const CONFIG = {
 Layer 1: networkidle wait       15s  (graceful degradation — proceeds on timeout)
 Layer 2: page.goto              30s  (Playwright navigation timeout)
 Layer 3: per-page crawl         60s  (safety net — skips page on timeout)
+Layer 3.5: URL-level retry      3x with 45s delay (when URL returns 0 listings)
 Layer 4: Sheets API per-call    30s  (with 3x retry + linear backoff)
-Layer 5: GitHub Actions job      6m  (outermost safety net)
+Layer 5: GitHub Actions job     15m  (outermost safety net)
 ```
 
 ## GitHub Actions
 
 Workflow: `.github/workflows/crawl.yml`
-- Schedule: 4x daily (06:00, 12:00, 16:00, 22:00 UTC+8)
+- Schedule: 6x daily (06:00, 09:00, 12:00, 16:00, 20:00, 23:00 UTC+8)
 - Manual trigger via workflow_dispatch
 - Requires 3 secrets: `GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`
 - Multiple sheets: Add `GOOGLE_SHEETS_ID_<NAME>` secrets (auto-discovered, no workflow changes needed)
