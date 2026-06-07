@@ -948,13 +948,25 @@ async function crawlUrl(
         await new Promise((r) => setTimeout(r, delay));
       }
 
-      const page = await context.newPage();
+      let page: Page | null = null;
       try {
+        console.log(`    [${ts()}] newPage() starting...`);
+        page = await Promise.race([
+          context.newPage(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error("newPage() timed out after 30s")),
+              30_000
+            )
+          ),
+        ]);
+        console.log(`    [${ts()}] newPage() done`);
+
         const listings = await Promise.race([
           (async () => {
             const gotoStart = Date.now();
             console.log(`    [${ts()}] goto starting...`);
-            const response = await page.goto(url, {
+            const response = await page!.goto(url, {
               waitUntil: "domcontentloaded",
               timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
             });
@@ -962,13 +974,13 @@ async function crawlUrl(
               `    [${ts()}] goto done in ${Date.now() - gotoStart}ms, status: ${response?.status() ?? "null"}`
             );
 
-            const challenge = await detectChallengePage(response, page, url);
+            const challenge = await detectChallengePage(response, page!, url);
             if (challenge.blocked) {
               console.log(`  ⚠️ Blocked: ${challenge.reason}`);
               return [] as ListingItem[];
             }
 
-            await page
+            await page!
               .waitForSelector(".item-info-title, .item-title", {
                 timeout: CONFIG.PAGE_SELECTOR_TIMEOUT_MS,
               })
@@ -977,7 +989,7 @@ async function crawlUrl(
               });
 
             const extractStart = Date.now();
-            const result = await extractListingsFromPage(page, baseUrl);
+            const result = await extractListingsFromPage(page!, baseUrl);
             console.log(`    [${ts()}] extracted ${result.length} listings in ${Date.now() - extractStart}ms`);
             return result;
           })(),
@@ -1019,14 +1031,16 @@ async function crawlUrl(
           );
         }
       } finally {
-        const closeStart = Date.now();
-        await Promise.race([
-          page.close(),
-          new Promise<void>((r) => setTimeout(r, 5000)),
-        ]).catch(() => {});
-        const closeMs = Date.now() - closeStart;
-        if (closeMs > 1000) {
-          console.log(`    [${ts()}] ⚠️ page.close() took ${closeMs}ms`);
+        if (page) {
+          const closeStart = Date.now();
+          await Promise.race([
+            page.close(),
+            new Promise<void>((r) => setTimeout(r, 5000)),
+          ]).catch(() => {});
+          const closeMs = Date.now() - closeStart;
+          if (closeMs > 1000) {
+            console.log(`    [${ts()}] ⚠️ page.close() took ${closeMs}ms`);
+          }
         }
       }
     }
