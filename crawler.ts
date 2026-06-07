@@ -102,7 +102,7 @@ const COL_COUNT = COLUMNS.length;
 const FIRST_CRAWLER_COL = COL["Title"]; // E — first column the crawler overwrites
 
 function ts() {
-  return new Date().toISOString().replace("T", " ").slice(0, 19) + "Z";
+  return new Date().toISOString().slice(11, 19) + "Z";
 }
 
 async function withRetry<T>(
@@ -950,22 +950,23 @@ async function crawlUrl(
 
       let page: Page | null = null;
       try {
-        console.log(`    [${ts()}] newPage() starting...`);
+        const newPageStart = Date.now();
+        let newPageTimerId: ReturnType<typeof setTimeout> | undefined;
         page = await Promise.race([
           context.newPage(),
-          new Promise<never>((_, reject) =>
-            setTimeout(
+          new Promise<never>((_, reject) => {
+            newPageTimerId = setTimeout(
               () => reject(new Error("newPage() timed out after 30s")),
               30_000
-            )
-          ),
-        ]);
-        console.log(`    [${ts()}] newPage() done`);
+            );
+          }),
+        ]).finally(() => clearTimeout(newPageTimerId));
+        console.log(`    [${ts()}] newPage() done (${Date.now() - newPageStart}ms)`);
 
+        let crawlTimerId: ReturnType<typeof setTimeout> | undefined;
         const listings = await Promise.race([
           (async () => {
             const gotoStart = Date.now();
-            console.log(`    [${ts()}] goto starting...`);
             const response = await page!.goto(url, {
               waitUntil: "domcontentloaded",
               timeout: CONFIG.PAGE_GOTO_TIMEOUT_MS,
@@ -988,13 +989,10 @@ async function crawlUrl(
                 console.log(`    [${ts()}] selector timeout, proceeding...`);
               });
 
-            const extractStart = Date.now();
-            const result = await extractListingsFromPage(page!, baseUrl);
-            console.log(`    [${ts()}] extracted ${result.length} listings in ${Date.now() - extractStart}ms`);
-            return result;
+            return await extractListingsFromPage(page!, baseUrl);
           })(),
-          new Promise<ListingItem[]>((_, reject) =>
-            setTimeout(() => {
+          new Promise<ListingItem[]>((_, reject) => {
+            crawlTimerId = setTimeout(() => {
               console.log(
                 `    [${ts()}] ⏱️ per-page timeout (${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms) triggered`
               );
@@ -1003,9 +1001,9 @@ async function crawlUrl(
                   `Page ${pageNum} timed out after ${CONFIG.PAGE_CRAWL_TIMEOUT_MS}ms`
                 )
               );
-            }, CONFIG.PAGE_CRAWL_TIMEOUT_MS)
-          ),
-        ]);
+            }, CONFIG.PAGE_CRAWL_TIMEOUT_MS);
+          }),
+        ]).finally(() => clearTimeout(crawlTimerId));
 
         if (listings.length === 0) {
           console.log("  No more listings, stopping.");
