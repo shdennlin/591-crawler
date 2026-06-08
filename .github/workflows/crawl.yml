@@ -16,16 +16,20 @@ name: 591 Rental Crawler
 # │  - develop: Manual trigger only (for testing)                   │
 # └─────────────────────────────────────────────────────────────────┘
 on:
-  schedule:
-    # Local Time (UTC+8)  →  UTC Time  →  Cron
-    # ─────────────────────────────────────────
-    - cron: '0 22 * * *'   # 06:00 UTC+8 → 22:00 UTC
-    - cron: '0 1 * * *'    # 09:00 UTC+8 → 01:00 UTC
-    - cron: '0 4 * * *'    # 12:00 UTC+8 → 04:00 UTC
-    - cron: '0 8 * * *'    # 16:00 UTC+8 → 08:00 UTC
-    - cron: '0 12 * * *'   # 20:00 UTC+8 → 12:00 UTC
-    - cron: '0 15 * * *'   # 23:00 UTC+8 → 15:00 UTC
-  workflow_dispatch:  # Allow manual trigger on any branch
+  # Schedule moved to a homelab cron that triggers workflow_dispatch via the
+  # GitHub API. GitHub's own scheduler was delaying runs up to ~1.5h at the top
+  # of the hour; the homelab cron fires on time. To restore GitHub scheduling,
+  # uncomment the cron lines below.
+  # schedule:
+  #   # Local Time (UTC+8)  →  UTC Time  →  Cron
+  #   # ─────────────────────────────────────────
+  #   - cron: '0 22 * * *'   # 06:00 UTC+8 → 22:00 UTC
+  #   - cron: '0 1 * * *'    # 09:00 UTC+8 → 01:00 UTC
+  #   - cron: '0 4 * * *'    # 12:00 UTC+8 → 04:00 UTC
+  #   - cron: '0 8 * * *'    # 16:00 UTC+8 → 08:00 UTC
+  #   - cron: '0 12 * * *'   # 20:00 UTC+8 → 12:00 UTC
+  #   - cron: '0 15 * * *'   # 23:00 UTC+8 → 15:00 UTC
+  workflow_dispatch:  # Allow manual trigger on any branch (homelab cron uses this)
 
 jobs:
   crawl:
