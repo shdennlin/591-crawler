@@ -34,9 +34,10 @@ on:
 jobs:
   crawl:
     runs-on: [self-hosted, pve-homelab]
-    # Each URL may be retried up to 3x with a 45s delay; 15 min gives enough
-    # headroom for 3 sheets × a few URLs × worst-case retries plus setup.
-    timeout-minutes: 15
+    # Each URL may be retried up to 3x with a 45s delay; 30 min gives enough
+    # headroom when 591 is slow (repeated page timeouts compound across
+    # 3 sheets × a few URLs × worst-case retries plus setup).
+    timeout-minutes: 30
     # Schedule runs only on main branch; manual dispatch works on any branch
     if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
 
@@ -74,8 +75,10 @@ jobs:
           ' >> $GITHUB_ENV
         shell: bash
 
+      # Run under xvfb so Chromium launches headful (no headless bot signal).
+      # xvfb is preinstalled on the self-hosted runner (lxc-130).
       - name: Run crawler
         env:
           GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
           GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
-        run: bun run crawl
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" bun run crawl

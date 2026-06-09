@@ -20,8 +20,8 @@ const TEST_URL = 'https://rent.591.com.tw/list?region=3&kind=3';
 async function createStealthContext(browser: Browser): Promise<BrowserContext> {
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    // No userAgent override: let headful Chromium self-report a UA that is
+    // consistent with its Sec-CH-UA client hints and platform (see crawler.ts).
     locale: 'zh-TW',
     timezoneId: 'Asia/Taipei',
     extraHTTPHeaders: {
@@ -243,7 +243,9 @@ async function main() {
 
   console.log('\nLaunching browser...');
   const browser = await chromium.launch({
-    headless: true,
+    // Headful by default (matches crawler.ts). Set HEADLESS=true to force
+    // headless when running without a display.
+    headless: process.env.HEADLESS === 'true',
     args: ['--disable-blink-features=AutomationControlled'],
   });
   const context = await createStealthContext(browser);

@@ -162,8 +162,10 @@ function getSheetConfigs(): { name: string; id: string }[] {
 async function createStealthContext(browser: Browser): Promise<BrowserContext> {
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },
-    userAgent:
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    // No userAgent override: a headful Chromium self-reports a UA that is
+    // internally consistent with its Sec-CH-UA client hints and platform.
+    // Pinning a Mac UA while running headless Linux made the three layers
+    // disagree — a stronger bot signal than a consistent real identity.
     locale: "zh-TW",
     timezoneId: "Asia/Taipei",
     extraHTTPHeaders: {
@@ -1088,7 +1090,10 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
   console.log(`\n🌐 [${ts()}] Launching browser...`);
   const launchStart = Date.now();
   const browser = await chromium.launch({
-    headless: true,
+    // Headful by default to drop the headless bot signal. On the self-hosted
+    // runner this runs under xvfb (virtual display). Set HEADLESS=true to
+    // force headless (e.g. an environment without any display).
+    headless: process.env.HEADLESS === "true",
     args: ["--disable-blink-features=AutomationControlled"],
   });
   const context = await createStealthContext(browser);
