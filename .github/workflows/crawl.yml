@@ -75,10 +75,13 @@ jobs:
           ' >> $GITHUB_ENV
         shell: bash
 
-      # Run under xvfb so Chromium launches headful (no headless bot signal).
-      # xvfb is preinstalled on the self-hosted runner (lxc-130).
+      # Run under xvfb (virtual display) + a private D-Bus session so Chromium
+      # launches headful reliably. Without a session bus, headful Chromium
+      # intermittently exits right after launch ("Failed to connect to the bus"
+      # → process exits 0 → launch timeout). xvfb and dbus are preinstalled on
+      # the self-hosted runner (lxc-130).
       - name: Run crawler
         env:
           GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
           GOOGLE_PRIVATE_KEY: ${{ secrets.GOOGLE_PRIVATE_KEY }}
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" bun run crawl
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" dbus-run-session -- bun run crawl
