@@ -78,21 +78,23 @@ const COLUMNS = [
   "Property ID", // D
   "Title", // E
   "Price", // F
-  "Property Type", // G
-  "Size (坪)", // H
-  "Floor", // I
-  "Location", // J
-  "Metro Distance", // K
-  "Tags", // L
-  "Agent Type", // M
-  "Agent Name", // N
-  "發佈時間", // O - absolute publish time (UTC+8), from detail page
-  "更新時間", // P - absolute update time (UTC+8), derived from refresh string
-  "Views", // Q
-  "Source URL", // R
-  "First Seen", // S
-  "Last Updated", // T
-  "Status", // U
+  "前次價格", // G - previous price, written only when price changes
+  "價格異動時間", // H - when the price change was observed (UTC+8)
+  "Property Type", // I
+  "Size (坪)", // J
+  "Floor", // K
+  "Location", // L
+  "Metro Distance", // M
+  "Tags", // N
+  "Agent Type", // O
+  "Agent Name", // P
+  "發佈時間", // Q - absolute publish time (UTC+8), from detail page
+  "更新時間", // R - absolute update time (UTC+8), derived from refresh string
+  "Views", // S
+  "Source URL", // T
+  "First Seen", // U
+  "Last Updated", // V
+  "Status", // W
 ] as const;
 
 const COL: Record<string, number> = Object.fromEntries(
@@ -333,57 +335,107 @@ async function ensureDataSheet(doc: GoogleSpreadsheet) {
 /**
  * Migrate an existing Data sheet to the current column layout.
  *
- * State-based and idempotent (no version flag): if "發佈時間" is already present
- * the sheet is current and we no-op. Otherwise we insert the "發佈時間" column
- * before the old "Update Info" column and rename "Update Info" → "更新時間".
- * insertDimension shifts all existing cell data right automatically, so user
- * columns and prior data stay aligned.
+ * State-based and idempotent (no version flag): each step checks for its own
+ * marker column and no-ops when already present. insertDimension shifts all
+ * existing cell data right automatically, so user columns and prior data stay
+ * aligned. Steps run in historical order so a sheet several versions behind
+ * catches up in one pass.
  */
 async function migrateDataSheetSchema(sheet: any): Promise<void> {
   await withRetry(() => sheet.loadHeaderRow(), "loadHeaderRow (migrate)").catch(
     () => {}
   );
-  const headers: string[] = sheet.headerValues || [];
 
-  if (headers.includes("發佈時間")) return; // already current
+  // Step 1: "Update Info" → 發佈時間 + 更新時間
+  let headers: string[] = sheet.headerValues || [];
+  if (!headers.includes("發佈時間")) {
+    const updateInfoIdx = headers.indexOf("Update Info");
+    if (updateInfoIdx === -1) {
+      console.log("  ⚠️ Unexpected Data sheet layout, skipping schema migration");
+      return;
+    }
 
-  const updateInfoIdx = headers.indexOf("Update Info");
-  if (updateInfoIdx === -1) {
-    console.log("  ⚠️ Unexpected Data sheet layout, skipping schema migration");
-    return;
+    console.log("  🔧 Migrating Data sheet: adding 發佈時間 / 更新時間 columns...");
+
+    // Insert a blank column at the 發佈時間 position (before Update Info).
+    await withRetry(
+      () =>
+        sheet.insertDimension(
+          "COLUMNS",
+          { startIndex: updateInfoIdx, endIndex: updateInfoIdx + 1 },
+          false
+        ),
+      "insertDimension (migrate)",
+      { maxRetries: 1 }
+    );
+
+    // Write the new header cell and rename the shifted "Update Info" header.
+    await withRetry(
+      () =>
+        sheet.loadCells({
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: updateInfoIdx,
+          endColumnIndex: updateInfoIdx + 2,
+        }),
+      "loadCells (migrate header)"
+    );
+    sheet.getCell(0, updateInfoIdx).value = "發佈時間";
+    sheet.getCell(0, updateInfoIdx + 1).value = "更新時間";
+    await withRetry(() => sheet.saveUpdatedCells(), "saveUpdatedCells (migrate)");
+
+    await withRetry(() => sheet.loadHeaderRow(), "loadHeaderRow (post-migrate)");
+    console.log("  ✅ Schema migration complete (發佈時間/更新時間)");
   }
 
-  console.log("  🔧 Migrating Data sheet: adding 發佈時間 / 更新時間 columns...");
+  // Step 2: 前次價格 + 價格異動時間 (after Price)
+  headers = sheet.headerValues || [];
+  if (!headers.includes("前次價格")) {
+    const priceIdx = headers.indexOf("Price");
+    if (priceIdx === -1) {
+      console.log("  ⚠️ Price column not found, skipping price-history migration");
+      return;
+    }
 
-  // Insert a blank column at the 發佈時間 position (before Update Info).
-  await withRetry(
-    () =>
-      sheet.insertDimension(
-        "COLUMNS",
-        { startIndex: updateInfoIdx, endIndex: updateInfoIdx + 1 },
-        false
-      ),
-    "insertDimension (migrate)",
-    { maxRetries: 1 }
-  );
+    console.log(
+      "  🔧 Migrating Data sheet: adding 前次價格 / 價格異動時間 columns..."
+    );
 
-  // Write the new header cell and rename the shifted "Update Info" header.
-  await withRetry(
-    () =>
-      sheet.loadCells({
-        startRowIndex: 0,
-        endRowIndex: 1,
-        startColumnIndex: updateInfoIdx,
-        endColumnIndex: updateInfoIdx + 2,
-      }),
-    "loadCells (migrate header)"
-  );
-  sheet.getCell(0, updateInfoIdx).value = "發佈時間";
-  sheet.getCell(0, updateInfoIdx + 1).value = "更新時間";
-  await withRetry(() => sheet.saveUpdatedCells(), "saveUpdatedCells (migrate)");
+    // Insert two blank columns right after Price.
+    await withRetry(
+      () =>
+        sheet.insertDimension(
+          "COLUMNS",
+          { startIndex: priceIdx + 1, endIndex: priceIdx + 3 },
+          false
+        ),
+      "insertDimension (migrate price)",
+      { maxRetries: 1 }
+    );
 
-  await withRetry(() => sheet.loadHeaderRow(), "loadHeaderRow (post-migrate)");
-  console.log("  ✅ Schema migration complete");
+    await withRetry(
+      () =>
+        sheet.loadCells({
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: priceIdx + 1,
+          endColumnIndex: priceIdx + 3,
+        }),
+      "loadCells (migrate price header)"
+    );
+    sheet.getCell(0, priceIdx + 1).value = "前次價格";
+    sheet.getCell(0, priceIdx + 2).value = "價格異動時間";
+    await withRetry(
+      () => sheet.saveUpdatedCells(),
+      "saveUpdatedCells (migrate price)"
+    );
+
+    await withRetry(
+      () => sheet.loadHeaderRow(),
+      "loadHeaderRow (post-migrate price)"
+    );
+    console.log("  ✅ Schema migration complete (前次價格/價格異動時間)");
+  }
 }
 
 async function formatConfigSheet(sheet: any) {
@@ -586,7 +638,13 @@ async function writeListingsToSheet(
   sheet: any,
   listings: ListingItem[],
   existingProperties: Map<string, { row: any; rowIndex: number }>
-): Promise<{ added: number; updated: number; unchanged: number; inactive: number }> {
+): Promise<{
+  added: number;
+  updated: number;
+  unchanged: number;
+  inactive: number;
+  priceChanges: number;
+}> {
   // Crawl instant: `crawlDate` anchors relative→absolute conversion; `now` is the
   // human-readable stamp used for First Seen / Last Updated (kept as-is, UTC).
   const crawlDate = new Date();
@@ -599,11 +657,17 @@ async function writeListingsToSheet(
   let updated = 0;
   let unchanged = 0;
   let inactive = 0;
+  let priceChanges = 0;
   const seenIds = new Set<string>();
   const newRows: any[][] = []; // Collect new rows to insert at top
 
-  // Collect updates for batch operation (columns E-U)
-  const rowsToUpdate: { rowIndex: number; data: any[] }[] = [];
+  // Collect updates for batch operation (columns E onward).
+  // priceDirection marks a real price change for cell coloring (down = green).
+  const rowsToUpdate: {
+    rowIndex: number;
+    data: any[];
+    priceDirection: "up" | "down" | null;
+  }[] = [];
   // Collect rows to mark as inactive
   const rowsToInactivate: number[] = [];
 
@@ -630,12 +694,30 @@ async function writeListingsToSheet(
         : false;
       const updateCell = refreshAdvanced ? candidateUpdate : null;
 
+      // Price change: only counts as one when BOTH sides are valid positive
+      // numbers (a blank/garbled stored price still triggers a rewrite via
+      // priceDiffers, but records no 前次價格 — there is no trustworthy baseline;
+      // a 0/NaN crawled price means extraction failed, not a real change).
+      const storedPrice = Number(existingRow.get("Price"));
+      const priceDiffers = storedPrice !== listing.priceNumber;
+      const realPriceChange =
+        priceDiffers &&
+        Number.isFinite(storedPrice) &&
+        storedPrice > 0 &&
+        Number.isFinite(listing.priceNumber) &&
+        listing.priceNumber > 0;
+      const priceDirection: "up" | "down" | null = realPriceChange
+        ? listing.priceNumber < storedPrice
+          ? "down"
+          : "up"
+        : null;
+
       // Note: Title comparison uses raw title text (not HYPERLINK formula)
       // because sheet returns displayed value, not formula string.
       // Update/publish times are handled separately above (not here).
       const otherChanged =
         existingRow.get("Title") !== listing.title ||
-        Number(existingRow.get("Price")) !== listing.priceNumber ||
+        priceDiffers ||
         existingRow.get("Property Type") !== listing.propertyType ||
         existingRow.get("Size (坪)") !== listing.size ||
         existingRow.get("Floor") !== listing.floor ||
@@ -650,30 +732,34 @@ async function writeListingsToSheet(
       const hasChanges = otherChanged || refreshAdvanced;
 
       if (hasChanges) {
-        // Collect update data for batch operation (columns E-U)
+        // Collect update data for batch operation (columns E-W)
         rowsToUpdate.push({
           rowIndex,
+          priceDirection,
           data: [
             titleWithLink, // E: Title
             listing.priceNumber, // F: Price - numeric with format
-            listing.propertyType, // G: Property Type
-            listing.size, // H: Size
-            listing.floor, // I: Floor
-            listing.location, // J: Location
-            listing.metroDistance, // K: Metro Distance
-            tagsStr, // L: Tags
-            listing.agentType, // M: Agent Type
-            listing.agentName, // N: Agent Name
-            null, // O: 發佈時間 — detail-page crawl removed; preserve existing
-            updateCell, // P: 更新時間 (null = preserve)
-            listing.views, // Q: Views
-            listing.sourceUrl, // R: Source URL
-            null, // S: First Seen - preserve
-            now, // T: Last Updated
-            "Active", // U: Status
+            realPriceChange ? storedPrice : null, // G: 前次價格 (null = preserve)
+            realPriceChange ? formatTaipei(crawlDate.getTime()) : null, // H: 價格異動時間 (null = preserve)
+            listing.propertyType, // I: Property Type
+            listing.size, // J: Size
+            listing.floor, // K: Floor
+            listing.location, // L: Location
+            listing.metroDistance, // M: Metro Distance
+            tagsStr, // N: Tags
+            listing.agentType, // O: Agent Type
+            listing.agentName, // P: Agent Name
+            null, // Q: 發佈時間 — detail-page crawl removed; preserve existing
+            updateCell, // R: 更新時間 (null = preserve)
+            listing.views, // S: Views
+            listing.sourceUrl, // T: Source URL
+            null, // U: First Seen - preserve
+            now, // V: Last Updated
+            "Active", // W: Status
           ],
         });
         updated++;
+        if (realPriceChange) priceChanges++;
       } else {
         unchanged++;
       }
@@ -686,21 +772,23 @@ async function writeListingsToSheet(
         listing.id, // D: Property ID
         titleWithLink, // E: Title
         listing.priceNumber, // F: Price - numeric with format
-        listing.propertyType, // G: Property Type
-        listing.size, // H: Size
-        listing.floor, // I: Floor
-        listing.location, // J: Location
-        listing.metroDistance, // K: Metro Distance
-        tagsStr, // L: Tags
-        listing.agentType, // M: Agent Type
-        listing.agentName, // N: Agent Name
-        "", // O: 發佈時間 — left blank (detail-page crawl removed)
-        candidateUpdate || "", // P: 更新時間
-        listing.views, // Q: Views
-        listing.sourceUrl, // R: Source URL
-        now, // S: First Seen
-        now, // T: Last Updated
-        "Active", // U: Status
+        "", // G: 前次價格 — no price history yet for a new listing
+        "", // H: 價格異動時間
+        listing.propertyType, // I: Property Type
+        listing.size, // J: Size
+        listing.floor, // K: Floor
+        listing.location, // L: Location
+        listing.metroDistance, // M: Metro Distance
+        tagsStr, // N: Tags
+        listing.agentType, // O: Agent Type
+        listing.agentName, // P: Agent Name
+        "", // Q: 發佈時間 — left blank (detail-page crawl removed)
+        candidateUpdate || "", // R: 更新時間
+        listing.views, // S: Views
+        listing.sourceUrl, // T: Source URL
+        now, // U: First Seen
+        now, // V: Last Updated
+        "Active", // W: Status
       ]);
       added++;
     }
@@ -805,15 +893,25 @@ async function writeListingsToSheet(
 
       // Apply updates (data array maps to columns E..last)
       const priceDataIdx = COL["Price"] - FIRST_CRAWLER_COL;
-      for (const { rowIndex, data } of rowsToUpdate) {
+      const prevPriceDataIdx = COL["前次價格"] - FIRST_CRAWLER_COL;
+      // Price-change highlight: 降價 = light green, 漲價 = light red. The color
+      // persists until the next price change recolors it, so a glance at the
+      // sheet shows which listings have ever moved and in which direction.
+      const PRICE_DOWN_BG = { red: 0.851, green: 0.918, blue: 0.827 }; // #D9EAD3
+      const PRICE_UP_BG = { red: 0.957, green: 0.8, blue: 0.8 }; // #F4CCCC
+      for (const { rowIndex, data, priceDirection } of rowsToUpdate) {
         for (let col = 0; col < data.length; col++) {
           // Skip null values (preserve existing, e.g., First Seen)
           if (data[col] !== null) {
             const cell = sheet.getCell(rowIndex, col + FIRST_CRAWLER_COL);
             cell.value = data[col];
-            // Apply number format to Price column
-            if (col === priceDataIdx) {
+            // Apply number format to Price / 前次價格 columns
+            if (col === priceDataIdx || col === prevPriceDataIdx) {
               cell.numberFormat = { type: "NUMBER", pattern: '#,##0"元/月"' };
+            }
+            if (col === priceDataIdx && priceDirection) {
+              cell.backgroundColor =
+                priceDirection === "down" ? PRICE_DOWN_BG : PRICE_UP_BG;
             }
           }
         }
@@ -833,7 +931,7 @@ async function writeListingsToSheet(
     }
   }
 
-  return { added, updated, unchanged, inactive };
+  return { added, updated, unchanged, inactive, priceChanges };
 }
 
 // ============================================================
@@ -1138,13 +1236,10 @@ async function processSheet(sheetName: string, sheetId: string): Promise<void> {
 
     // Write to Google Sheets
     console.log("\n💾 Writing to Google Sheets...");
-    const { added, updated, unchanged, inactive } = await writeListingsToSheet(
-      sheet,
-      uniqueListings,
-      existingProperties
-    );
+    const { added, updated, unchanged, inactive, priceChanges } =
+      await writeListingsToSheet(sheet, uniqueListings, existingProperties);
     console.log(
-      `✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}, Inactive: ${inactive}`
+      `✅ Added: ${added}, Updated: ${updated}, Unchanged: ${unchanged}, Inactive: ${inactive}, Price changes: ${priceChanges}`
     );
   } finally {
     await Promise.race([

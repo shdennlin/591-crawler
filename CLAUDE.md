@@ -40,7 +40,7 @@ Parse Listings → Deduplicate by Property ID → Write to Data Sheet
 4. `ensureConfigSheet()` - Reads active URLs from Config sheet
 5. `crawlUrl()` - Navigates pages with Playwright, handles pagination
 6. `extractListingsFromPage()` - Parses `window.__NUXT__` for listing data (591 uses Nuxt.js SSR)
-7. `migrateDataSheetSchema()` - Idempotently adds 發佈時間/更新時間 columns to existing sheets
+7. `migrateDataSheetSchema()` - Idempotently adds new columns to existing sheets (發佈時間/更新時間, then 前次價格/價格異動時間)
 8. `writeListingsToSheet()` - Batch writes with deduplication, marks removed listings as "Inactive"
 
 ### Data Extraction
@@ -51,6 +51,8 @@ Parse Listings → Deduplicate by Property ID → Write to Data Sheet
 - **發佈時間 (publish)**: absolute publish time lives only on the *detail page* (`favData.posttime`). Fetching it required visiting every listing's detail page — slow (~4s anti-bot delay each) and bot-risky — so detail-page crawling was **removed**. The column is kept and existing values are preserved, but new rows are left blank.
 - **更新時間 (update)**: derived from the relative `refresh_time` anchored to crawl time → UTC+8. Recomputed each run but only rewritten when it jumps past `REFRESH_UPDATE_THRESHOLD_MS` (a real refresh vs. bucket drift).
 
+**Price-change tracking**: when an existing listing's Price differs from the stored value (and the stored value is a valid number), the crawler writes the old price to 前次價格, stamps 價格異動時間 (UTC+8), and colors the Price cell (降價 = light green #D9EAD3, 漲價 = light red #F4CCCC). The color persists until the next price change recolors it. Only the latest change is kept (no full history). Sorting/filtering by 價格異動時間 in Sheets surfaces recent price moves without reordering rows.
+
 ### Google Sheets Structure
 
 **Config Sheet**: URL | Description | Status (Active/Inactive)
@@ -58,8 +60,8 @@ Parse Listings → Deduplicate by Property ID → Write to Data Sheet
 **Data Sheet** (column order is the single source of truth in `crawler.ts` `COLUMNS`):
 - Columns A-C: User columns (★ Mark, ★ Rating, ★ Remarks) - **always preserved**
 - Column D: Property ID (unique key)
-- Columns E-U: Crawler-managed data (Title, Price, …, 發佈時間, 更新時間, …, Status)
-- Schema migration is automatic & idempotent (detects 發佈時間 column; no version flag)
+- Columns E-W: Crawler-managed data (Title, Price, 前次價格, 價格異動時間, …, 發佈時間, 更新時間, …, Status)
+- Schema migration is automatic & idempotent (each step detects its own marker column — 發佈時間, then 前次價格; no version flag)
 
 ### Deduplication Logic
 
