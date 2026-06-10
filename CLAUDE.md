@@ -105,7 +105,7 @@ Layer 5: GitHub Actions job     15m  (outermost safety net)
 ## GitHub Actions
 
 Workflow: `.github/workflows/crawl.yml`
-- Schedule: 6x daily (06:00, 09:00, 12:00, 16:00, 20:00, 23:00 UTC+8)
+- Schedule: 9x daily (05:00, 07:00, 10:00, 12:00, 14:00, 17:00, 19:00, 21:00, 24:00 UTC+8) — via homelab cron in CT 130 (root crontab), not GitHub's scheduler
 - Manual trigger via workflow_dispatch
 - Requires 3 secrets: `GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`
 - Multiple sheets: Add `GOOGLE_SHEETS_ID_<NAME>` secrets (auto-discovered, no workflow changes needed)
