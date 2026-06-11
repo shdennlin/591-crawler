@@ -109,3 +109,10 @@ Workflow: `.github/workflows/crawl.yml`
 - Manual trigger via workflow_dispatch
 - Requires 3 secrets: `GOOGLE_SHEETS_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PRIVATE_KEY`
 - Multiple sheets: Add `GOOGLE_SHEETS_ID_<NAME>` secrets (auto-discovered, no workflow changes needed)
+
+### Changing the crawl schedule (keep 3 places in sync)
+
+The schedule has no single source of truth — it lives in 3 spots that must be updated together:
+1. **Live trigger**: root crontab in CT 130 (`ssh pve 'pct exec 130 -- crontab -e'`). Container TZ is Asia/Taipei, so cron hours are local UTC+8 (hour `0` = the 24:00 slot). This is the only one that actually changes when runs fire.
+2. **Docs/fallback**: this file (above) + the comment block & commented-out `schedule:` cron in `.github/workflows/crawl.yml` (the GitHub fallback if the homelab cron is ever re-enabled — uses UTC, subtract 8h).
+3. **User-facing label**: `CONFIG.CRAWL_SCHEDULE_NOTE` in `crawler.ts` — written into the Config sheet's 更新頻率 row each run, so sheet viewers see it. Updates appear on the *next* crawl, not immediately.
