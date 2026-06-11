@@ -58,11 +58,11 @@ const CONFIG = {
   SHEET_CONFIG: "Config",
 
   // User-facing crawl frequency, shown in the Config sheet so sheet viewers know
-  // how fresh the data is. KEEP IN SYNC with the cron in
-  // .github/workflows/crawl.yml — GitHub's schedule has no runtime API to read,
-  // so this label is maintained by hand.
+  // how fresh the data is. KEEP IN SYNC with the live schedule (the homelab cron
+  // in CT 130's root crontab — the GitHub schedule in crawl.yml is disabled).
+  // There's no runtime API to read the cron, so this label is maintained by hand.
   CRAWL_SCHEDULE_NOTE:
-    "每天自動更新 6 次（台灣時間 06:00 / 09:00 / 12:00 / 16:00 / 20:00 / 23:00）",
+    "每天自動更新 9 次（台灣時間 05:00 / 07:00 / 10:00 / 12:00 / 14:00 / 17:00 / 19:00 / 21:00 / 24:00）",
 };
 
 // ============================================================
